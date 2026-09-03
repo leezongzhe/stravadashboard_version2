@@ -1,0 +1,9 @@
+{
+  "timezone": "UTC",
+  "resting_heart_rate": 60,
+  "maximum_heart_rate": 190,
+  "moving_speed_threshold_mps": 0.5,
+  "maximum_moving_gap_seconds": 10,
+  "altitude_smoothing_points": 15,
+  "automatic_retry_limit": 2
+}

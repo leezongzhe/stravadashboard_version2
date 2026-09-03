@@ -1,0 +1,26 @@
+browser_data/
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+
+# Personal Strava data and generated databases
+incoming/
+*.tcx
+*.db
+*.db-shm
+*.db-wal
+
+# Personal heart-rate and timezone configuration
+config.json
+
+# Personal Strava data and generated databases
+incoming/
+*.tcx
+*.db
+*.db-shm
+*.db-wal
+
+# Personal heart-rate and timezone configuration
+config.json
