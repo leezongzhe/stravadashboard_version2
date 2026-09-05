@@ -5,10 +5,9 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "strava_dashboard_v2.db"
 INCOMING_DIR = ROOT_DIR / "incoming"
-# Reuse the authenticated Chrome profile from version 1. Keeping one shared
-# profile also prevents users from having to sign in separately for each
-# dashboard version.
-BROWSER_DATA_DIR = ROOT_DIR.parent / "browser_data"
+# Keep Version 2 self-contained. This persistent profile is private, ignored by
+# Git, and reused on later launches after the first successful Strava login.
+BROWSER_DATA_DIR = ROOT_DIR / "browser_data"
 CONFIG_PATH = ROOT_DIR / "config.json"
 
 DEFAULT_CONFIG = {

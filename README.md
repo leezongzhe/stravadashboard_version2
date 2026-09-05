@@ -36,7 +36,14 @@ py -3 -m venv .venv
 .\run_dashboard.ps1
 ```
 
-Version 2 uses the same login mechanism as version 1: Playwright launches the installed Google Chrome executable with the shared persistent `../browser_data` profile. If authentication has already been saved by version 1, version 2 reuses it. Otherwise, complete Strava/Google authentication once in the opened Chrome window.
+Version 2 uses the same login mechanism as Version 1: Playwright launches the
+installed Google Chrome executable with a persistent profile. Version 2 stores
+that private profile in its own `browser_data/` folder. Complete Strava/Google
+authentication in the opened Chrome window on the first run; later runs reuse
+the saved session.
+
+Google Chrome must be installed for online synchronization. Python 3.10 or newer
+is recommended.
 
 ## Useful modes
 

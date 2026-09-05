@@ -44,7 +44,23 @@ st.markdown(
         box-shadow: 0 8px 24px rgba(31, 72, 57, 0.07);
     }
     [data-testid="stMetricLabel"] { color: #587067; }
-    [data-testid="stMetricValue"] { color: #17352b; }
+    [data-testid="stMetricValue"] {
+        color: #17352b;
+        font-size: clamp(1.45rem, 2.15vw, 2.3rem) !important;
+        line-height: 1.12 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+    [data-testid="stMetricValue"] > div,
+    [data-testid="stMetricValue"] p {
+        max-width: none !important;
+        font-size: inherit !important;
+        line-height: inherit !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
     [data-baseweb="select"] > div, [data-baseweb="input"] > div {
         border-radius: 14px !important;
         border-color: rgba(38, 92, 70, 0.16) !important;
