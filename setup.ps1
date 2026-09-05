@@ -9,6 +9,7 @@ if (-not (Test-Path -LiteralPath $PythonPath)) {
 
 & $PythonPath -m pip install --upgrade pip
 & $PythonPath -m pip install -r (Join-Path $VersionRoot "requirements.txt")
+& $PythonPath -m playwright install chromium
 
 Write-Output "Setup complete."
 Write-Output "Run: .\.venv\Scripts\python.exe launcher.py"

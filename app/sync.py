@@ -1,6 +1,5 @@
 import asyncio
 import re
-from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -23,26 +22,22 @@ def _authenticated(url):
 
 
 async def launch_browser(playwright):
-    """Launch real Google Chrome using the same mechanism as version 1."""
+    """Launch the browser using Version 1's proven persistent-profile flow."""
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    chrome_candidates = [
-        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-        Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe",
-    ]
-    chrome_path = next((path for path in chrome_candidates if path.exists()), None)
-    if chrome_path is None:
-        locations = "\n".join(f"  - {path}" for path in chrome_candidates)
-        raise RuntimeError(
-            "Google Chrome is required for Strava Google login but was not found. "
-            f"Checked:\n{locations}"
+    options = {
+        "user_data_dir": str(BROWSER_DATA_DIR),
+        "headless": False,
+        "accept_downloads": True,
+    }
+    try:
+        return await playwright.chromium.launch_persistent_context(
+            channel="chrome",
+            **options,
         )
-    return await playwright.chromium.launch_persistent_context(
-        user_data_dir=str(BROWSER_DATA_DIR),
-        executable_path=str(chrome_path),
-        headless=False,
-        accept_downloads=True,
-    )
+    except Exception as chrome_error:
+        print(f"[!] Google Chrome could not be launched: {chrome_error}")
+        print("[*] Trying Playwright Chromium instead...")
+        return await playwright.chromium.launch_persistent_context(**options)
 
 
 async def ensure_login(page):

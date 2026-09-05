@@ -28,6 +28,7 @@ If PowerShell blocks local scripts, run the commands manually:
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
 ## Normal execution
@@ -37,13 +38,13 @@ py -3 -m venv .venv
 ```
 
 Version 2 uses the same login mechanism as Version 1: Playwright launches the
-installed Google Chrome executable with a persistent profile. Version 2 stores
-that private profile in its own `browser_data/` folder. Complete Strava/Google
-authentication in the opened Chrome window on the first run; later runs reuse
-the saved session.
+installed Google Chrome executable with a persistent profile. When Version 1 is
+next to this project, Version 2 reuses the known-working profile at
+`../version_1/browser_data`. A standalone clone uses its own `browser_data/`
+folder. Complete Strava/Google authentication only when no saved session exists.
 
-Google Chrome must be installed for online synchronization. Python 3.10 or newer
-is recommended.
+Google Chrome is attempted first, exactly as in Version 1. Playwright Chromium is
+used as a fallback. Python 3.10 or newer is recommended.
 
 ## Useful modes
 

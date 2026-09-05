@@ -13,7 +13,7 @@ def check_dependencies():
     if missing:
         print("Missing dependencies: " + ", ".join(missing))
         print("Run: python -m pip install -r requirements.txt")
-        print("Google Chrome must also be installed for Strava synchronization.")
+        print("Then run: python -m playwright install chromium")
         return False
     return True
 
