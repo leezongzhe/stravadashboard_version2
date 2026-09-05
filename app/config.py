@@ -5,14 +5,8 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "strava_dashboard_v2.db"
 INCOMING_DIR = ROOT_DIR / "incoming"
-# Reuse Version 1's known-working authenticated profile when both projects are
-# stored together. A standalone Version 2 clone falls back to its own profile.
-VERSION_1_BROWSER_DATA_DIR = ROOT_DIR.parent / "version_1" / "browser_data"
-BROWSER_DATA_DIR = (
-    VERSION_1_BROWSER_DATA_DIR
-    if VERSION_1_BROWSER_DATA_DIR.exists()
-    else ROOT_DIR / "browser_data"
-)
+# Version 2 owns its browser profile. It never reads or writes Version 1 data.
+BROWSER_DATA_DIR = ROOT_DIR / "browser_data"
 CONFIG_PATH = ROOT_DIR / "config.json"
 
 DEFAULT_CONFIG = {

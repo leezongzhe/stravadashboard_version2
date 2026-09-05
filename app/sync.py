@@ -47,15 +47,13 @@ async def ensure_login(page):
         print("[OK] Existing Strava session found.")
         return
 
-    google_name = re.compile(r"(continue|sign up|log in|sign in).*google|google.*(continue|sign up|log in|sign in)", re.I)
-    controls = [page.get_by_role("button", name=google_name), page.get_by_role("link", name=google_name)]
-    for control in controls:
-        if await control.count() and await control.first.is_visible():
-            print("[*] Reusing saved Google authentication...")
-            await control.first.click()
-            break
-
-    print("[*] If prompted, finish Google/Strava login in the browser.")
+    # A new Playwright profile can be rejected by Google's OAuth security page.
+    # Do not force that route. Leave the visible Strava login page under the
+    # user's control so they can use their normal Strava credentials or another
+    # available login method. Once authenticated, this Version 2 profile is
+    # retained and reused automatically.
+    print("[*] Login is required in the open browser.")
+    print("[*] For a new profile, use direct Strava login if Google rejects automated Chrome.")
     try:
         await page.wait_for_url(
             re.compile(r"https://(www\.)?strava\.com/(?!login|register).+"),
@@ -69,7 +67,7 @@ async def ensure_login(page):
     await asyncio.sleep(2)
     if not _authenticated(page.url):
         raise RuntimeError("Strava login could not be verified")
-    print("[OK] Strava login completed.")
+    print("[OK] Strava login completed and saved in Version 2 browser_data.")
 
 
 async def discover_activity_ids(page, scroll_rounds=12):
