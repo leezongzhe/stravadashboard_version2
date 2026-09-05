@@ -1,5 +1,8 @@
 import asyncio
 import re
+import socket
+import subprocess
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -17,27 +20,99 @@ from .importer import import_all, import_tcx
 TRAINING_URL = "https://www.strava.com/athlete/training"
 
 
+class ChromeSession:
+    """Expose a BrowserContext-like interface and own the Chrome process."""
+
+    def __init__(self, browser, context, process):
+        self.browser = browser
+        self.context = context
+        self.process = process
+
+    @property
+    def pages(self):
+        return self.context.pages
+
+    async def new_page(self):
+        return await self.context.new_page()
+
+    async def close(self):
+        try:
+            await self.browser.close()
+        finally:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    await asyncio.to_thread(self.process.wait, 5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+
+
+def _find_chrome():
+    candidates = [
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe",
+    ]
+    return next((path for path in candidates if path.exists()), None)
+
+
+def _find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+async def _connect_to_chrome(playwright, port, process, timeout=20):
+    """Wait until Chrome's local DevTools endpoint accepts a connection."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_error = None
+    while loop.time() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"Chrome exited during startup (code {process.returncode}).")
+        try:
+            return await playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}",
+                timeout=1000,
+            )
+        except Exception as error:
+            last_error = error
+        await asyncio.sleep(0.25)
+    raise RuntimeError(
+        "Chrome remote-debugging endpoint did not start within 20 seconds."
+    ) from last_error
+
+
 def _authenticated(url):
     return bool(re.match(r"https://(www\.)?strava\.com/(?!login|register)", url))
 
 
 async def launch_browser(playwright):
-    """Launch the browser using Version 1's proven persistent-profile flow."""
+    """Start normal Chrome, then attach Playwright to the private V2 profile."""
     BROWSER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    options = {
-        "user_data_dir": str(BROWSER_DATA_DIR),
-        "headless": False,
-        "accept_downloads": True,
-    }
+    chrome_path = _find_chrome()
+    if chrome_path is None:
+        raise RuntimeError("Google Chrome was not found. Install Chrome before synchronizing.")
+
+    port = _find_free_port()
+    command = [
+        str(chrome_path),
+        f"--user-data-dir={BROWSER_DATA_DIR}",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "about:blank",
+    ]
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    process = subprocess.Popen(command, creationflags=creation_flags)
     try:
-        return await playwright.chromium.launch_persistent_context(
-            channel="chrome",
-            **options,
-        )
-    except Exception as chrome_error:
-        print(f"[!] Google Chrome could not be launched: {chrome_error}")
-        print("[*] Trying Playwright Chromium instead...")
-        return await playwright.chromium.launch_persistent_context(**options)
+        browser = await _connect_to_chrome(playwright, port, process)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        return ChromeSession(browser, context, process)
+    except Exception:
+        if process.poll() is None:
+            process.terminate()
+        raise
 
 
 async def ensure_login(page):
@@ -47,13 +122,28 @@ async def ensure_login(page):
         print("[OK] Existing Strava session found.")
         return
 
-    # A new Playwright profile can be rejected by Google's OAuth security page.
-    # Do not force that route. Leave the visible Strava login page under the
-    # user's control so they can use their normal Strava credentials or another
-    # available login method. Once authenticated, this Version 2 profile is
-    # retained and reused automatically.
-    print("[*] Login is required in the open browser.")
-    print("[*] For a new profile, use direct Strava login if Google rejects automated Chrome.")
+    google_name = re.compile(
+        r"(continue|sign up|log in|sign in).*google|google.*(continue|sign up|log in|sign in)",
+        re.I,
+    )
+    controls = [
+        page.get_by_role("button", name=google_name),
+        page.get_by_role("link", name=google_name),
+    ]
+    for control in controls:
+        if await control.count() and await control.first.is_visible():
+            print("[*] Pressing the Strava Google login control...")
+            await control.first.click()
+            await asyncio.sleep(2)
+            break
+
+    if "accounts.google.com" in page.url and "/signin/rejected" in page.url:
+        raise RuntimeError(
+            "Google rejected this browser session. Close every Chrome window, "
+            "remove version_2/browser_data, and run synchronization again."
+        )
+
+    print("[*] If prompted, finish Google/Strava login in the open Chrome window.")
     try:
         await page.wait_for_url(
             re.compile(r"https://(www\.)?strava\.com/(?!login|register).+"),

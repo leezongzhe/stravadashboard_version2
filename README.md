@@ -37,20 +37,17 @@ py -3 -m venv .venv
 .\run_dashboard.ps1
 ```
 
-Version 2 uses the same login mechanism as Version 1: Playwright launches the
-installed Google Chrome executable with a persistent profile. Version 2 always
-uses its own private `browser_data/` folder and never reads Version 1's browser
-profile. Complete authentication once in the visible browser; later runs reuse
-the saved Version 2 session.
+Version 2 uses the same Strava discovery, TCX download, and persistent-session
+approach as Version 1. It always stores its private browser profile in
+`browser_data/` and never reads Version 1's profile.
 
-For a completely new profile, Google may reject sign-in from an automated browser
-with a “Couldn't sign you in” message. Version 2 therefore leaves the login page
-under your control instead of automatically pressing the Google button. Use
-direct Strava credentials when available. This restriction comes from Google's
-OAuth security policy, not from the dashboard database or synchronization logic.
+For first login, Version 2 starts the installed Chrome executable normally and
+then attaches the synchronization controller through Chrome's debugging endpoint.
+It presses Strava's Google login control when present, lets you complete any
+account or two-factor prompt, and saves the resulting session for later runs.
+Close other Chrome windows using the Version 2 profile before synchronization.
 
-Google Chrome is attempted first, exactly as in Version 1. Playwright Chromium is
-used as a fallback. Python 3.10 or newer is recommended.
+Google Chrome and Python 3.10 or newer are required.
 
 ## Useful modes
 
