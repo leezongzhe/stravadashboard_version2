@@ -3,11 +3,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app import config as app_config
 from app import database
 from app.config import resolve_maximum_heart_rate, resolve_resting_heart_rate
 
 
 class HeartRateRecordTests(unittest.TestCase):
+    def test_highest_hr_limit_is_persisted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config_path = Path(folder) / "config.json"
+            with patch.object(app_config, "CONFIG_PATH", config_path):
+                app_config.save_config({"highest_hr_activity_limit": 7})
+                self.assertEqual(
+                    app_config.load_config()["highest_hr_activity_limit"], 7
+                )
+
     def test_automatic_and_manual_sources(self):
         automatic = {
             "resting_heart_rate_mode": "observed",

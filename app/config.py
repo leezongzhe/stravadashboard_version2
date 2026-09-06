@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "zone_upper_percentages": [60, 70, 80, 90, 100],
     "minimum_valid_heart_rate": 40,
     "maximum_valid_heart_rate": 240,
+    "highest_hr_activity_limit": None,
     "moving_speed_threshold_mps": 0.5,
     "maximum_moving_gap_seconds": 10,
     "altitude_smoothing_points": 15,

@@ -813,15 +813,28 @@ with tab_settings:
     st.markdown("#### Highest-HR activities")
     available_hr_activities = int(hr_observations.get("activities_with_hr", 0))
     if available_hr_activities:
+        saved_highest_hr_limit = config.get("highest_hr_activity_limit")
+        initial_highest_hr_limit = (
+            max(1, min(int(saved_highest_hr_limit), available_hr_activities))
+            if saved_highest_hr_limit is not None
+            else available_hr_activities
+        )
         highest_hr_limit = st.number_input(
             "Show top N activities",
             min_value=1,
             max_value=available_hr_activities,
-            value=min(25, available_hr_activities),
+            value=initial_highest_hr_limit,
             step=1,
             key="highest_hr_activity_limit",
-            help="Choose how many activities to include after ranking by maximum valid HR.",
+            help=(
+                "Choose how many activities to include after ranking by maximum valid HR. "
+                "Your selection is saved as the default for future dashboard sessions."
+            ),
         )
+        if int(highest_hr_limit) != saved_highest_hr_limit:
+            save_config({"highest_hr_activity_limit": int(highest_hr_limit)})
+            config["highest_hr_activity_limit"] = int(highest_hr_limit)
+        st.caption(f"Saved default: top {int(highest_hr_limit)} activities")
     else:
         highest_hr_limit = 1
     st.caption(
