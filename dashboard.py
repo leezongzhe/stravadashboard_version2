@@ -1,5 +1,6 @@
 import html
 import sqlite3
+from datetime import datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -16,6 +17,7 @@ from app.config import (
     resolve_maximum_heart_rate,
     resolve_resting_heart_rate,
     save_config,
+    worldwide_timezones,
 )
 from app.database import (
     activity_heart_rate_extrema,
@@ -260,6 +262,16 @@ def add_activity_labels(frame):
 
 def activity_analysis_url(activity_id):
     return f"?view=activity&activity_id={quote(str(activity_id), safe='')}"
+
+
+def timezone_label(timezone_name):
+    """Show a readable IANA location together with its current UTC offset."""
+    try:
+        offset = datetime.now(ZoneInfo(timezone_name)).strftime("%z")
+        formatted_offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+    except ZoneInfoNotFoundError:
+        formatted_offset = "Unavailable"
+    return f"{timezone_name.replace('_', ' ')}  ·  {formatted_offset}"
 
 
 def render_linked_report(frame, columns):
@@ -698,9 +710,20 @@ with tab_settings:
             "Maximum valid sensor HR", min_value=120, max_value=260,
             value=int(config.get("maximum_valid_heart_rate", 240)), step=1,
         )
-        timezone_name = timezone_column.text_input(
-            "Timezone", value=str(config.get("timezone", "UTC")),
-            help="Use an IANA name such as Asia/Kuala_Lumpur or Europe/London.",
+        timezone_options = worldwide_timezones()
+        current_timezone = str(config.get("timezone", "UTC"))
+        if current_timezone not in timezone_options:
+            timezone_options.append(current_timezone)
+            timezone_options.sort()
+        timezone_name = timezone_column.selectbox(
+            "Timezone",
+            timezone_options,
+            index=timezone_options.index(current_timezone),
+            format_func=timezone_label,
+            help=(
+                "Search the worldwide IANA catalog by region or city. "
+                "The displayed UTC offset reflects the current date and daylight-saving rules."
+            ),
         )
 
         advanced_left, advanced_middle, advanced_right = st.columns(3)

@@ -78,6 +78,10 @@ resting/maximum HR sources, five HR-zone limits, valid sensor range, movement
 threshold, recording-gap limit, altitude smoothing, and download retry limit.
 The private values are saved to `config.json`, which is excluded from Git.
 
+The timezone field is a searchable worldwide selector built dynamically from the
+installed IANA timezone database. Options use region/city names and show their
+current UTC offsets, including applicable daylight-saving rules.
+
 ## Dynamic heart-rate records and zones
 
 Version 2 stores per-activity HR minima/maxima and an all-time record history in

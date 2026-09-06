@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from zoneinfo import available_timezones
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -79,3 +80,8 @@ def resolve_resting_heart_rate(config, observed_minimum=None):
         return int(observed_minimum), "Lowest downloaded TCX activity record"
     fallback = config.get("fallback_resting_heart_rate", 60)
     return int(fallback), "Fallback until HR data is imported"
+
+
+def worldwide_timezones():
+    """Return the searchable IANA timezone catalog available on this system."""
+    return sorted(available_timezones())

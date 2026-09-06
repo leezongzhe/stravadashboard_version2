@@ -9,6 +9,13 @@ from app.config import resolve_maximum_heart_rate, resolve_resting_heart_rate
 
 
 class HeartRateRecordTests(unittest.TestCase):
+    def test_worldwide_timezone_catalog_is_available(self):
+        zones = app_config.worldwide_timezones()
+        self.assertGreater(len(zones), 300)
+        self.assertIn("Asia/Kuala_Lumpur", zones)
+        self.assertIn("Europe/London", zones)
+        self.assertIn("America/New_York", zones)
+
     def test_highest_hr_limit_is_persisted(self):
         with tempfile.TemporaryDirectory() as folder:
             config_path = Path(folder) / "config.json"
