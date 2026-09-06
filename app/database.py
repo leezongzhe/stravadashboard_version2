@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from .config import DB_PATH
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @contextmanager
@@ -72,6 +72,25 @@ def initialize_database():
                 setting_key TEXT PRIMARY KEY,
                 setting_value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS activity_hr_extrema (
+                activity_id TEXT PRIMARY KEY,
+                minimum_hr INTEGER NOT NULL,
+                minimum_observed_at TEXT,
+                maximum_hr INTEGER NOT NULL,
+                maximum_observed_at TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(activity_id) REFERENCES activities(activity_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS heart_rate_record_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_type TEXT NOT NULL CHECK(record_type IN ('minimum', 'maximum')),
+                heart_rate INTEGER NOT NULL,
+                activity_id TEXT NOT NULL,
+                observed_at TEXT,
+                recorded_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_trackpoints_activity_time
@@ -207,3 +226,156 @@ def reset_failures():
             (utc_now(),),
         )
         connection.commit()
+
+
+def refresh_heart_rate_records(minimum_valid=40, maximum_valid=240):
+    """Rebuild activity extrema and append newly established all-time records."""
+    minimum_valid = int(minimum_valid)
+    maximum_valid = int(maximum_valid)
+    if minimum_valid >= maximum_valid:
+        raise ValueError("Minimum valid HR must be lower than maximum valid HR")
+
+    now = utc_now()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT tp.activity_id, MIN(tp.heart_rate) minimum_hr,
+                   MAX(tp.heart_rate) maximum_hr
+            FROM trackpoints tp
+            JOIN activities a ON a.activity_id = tp.activity_id
+            WHERE a.import_status = 'imported'
+              AND tp.heart_rate BETWEEN ? AND ?
+            GROUP BY tp.activity_id
+            """,
+            (minimum_valid, maximum_valid),
+        ).fetchall()
+
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DELETE FROM activity_hr_extrema")
+        extrema = []
+        for row in rows:
+            activity_id = str(row["activity_id"])
+            minimum_hr = int(row["minimum_hr"])
+            maximum_hr = int(row["maximum_hr"])
+            minimum_time = connection.execute(
+                """
+                SELECT time FROM trackpoints
+                WHERE activity_id = ? AND heart_rate = ?
+                ORDER BY time LIMIT 1
+                """,
+                (activity_id, minimum_hr),
+            ).fetchone()
+            maximum_time = connection.execute(
+                """
+                SELECT time FROM trackpoints
+                WHERE activity_id = ? AND heart_rate = ?
+                ORDER BY time LIMIT 1
+                """,
+                (activity_id, maximum_hr),
+            ).fetchone()
+            minimum_observed_at = minimum_time[0] if minimum_time else None
+            maximum_observed_at = maximum_time[0] if maximum_time else None
+            extrema.append((
+                activity_id, minimum_hr, minimum_observed_at,
+                maximum_hr, maximum_observed_at, now,
+            ))
+
+        connection.executemany(
+            """
+            INSERT INTO activity_hr_extrema(
+                activity_id, minimum_hr, minimum_observed_at,
+                maximum_hr, maximum_observed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            extrema,
+        )
+
+        current = connection.execute(
+            """
+            SELECT
+                (SELECT MIN(minimum_hr) FROM activity_hr_extrema) observed_minimum,
+                (SELECT MAX(maximum_hr) FROM activity_hr_extrema) observed_maximum
+            """
+        ).fetchone()
+        observed_minimum = current["observed_minimum"]
+        observed_maximum = current["observed_maximum"]
+
+        prior = connection.execute(
+            """
+            SELECT
+                MIN(CASE WHEN record_type='minimum' THEN heart_rate END) prior_minimum,
+                MAX(CASE WHEN record_type='maximum' THEN heart_rate END) prior_maximum
+            FROM heart_rate_record_history
+            """
+        ).fetchone()
+
+        if observed_minimum is not None and (
+            prior["prior_minimum"] is None or observed_minimum < prior["prior_minimum"]
+        ):
+            source = connection.execute(
+                """
+                SELECT activity_id, minimum_observed_at FROM activity_hr_extrema
+                WHERE minimum_hr = ? ORDER BY minimum_observed_at LIMIT 1
+                """,
+                (observed_minimum,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO heart_rate_record_history(
+                    record_type, heart_rate, activity_id, observed_at, recorded_at
+                ) VALUES ('minimum', ?, ?, ?, ?)
+                """,
+                (observed_minimum, source["activity_id"], source["minimum_observed_at"], now),
+            )
+
+        if observed_maximum is not None and (
+            prior["prior_maximum"] is None or observed_maximum > prior["prior_maximum"]
+        ):
+            source = connection.execute(
+                """
+                SELECT activity_id, maximum_observed_at FROM activity_hr_extrema
+                WHERE maximum_hr = ? ORDER BY maximum_observed_at LIMIT 1
+                """,
+                (observed_maximum,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO heart_rate_record_history(
+                    record_type, heart_rate, activity_id, observed_at, recorded_at
+                ) VALUES ('maximum', ?, ?, ?, ?)
+                """,
+                (observed_maximum, source["activity_id"], source["maximum_observed_at"], now),
+            )
+
+        connection.commit()
+        return {
+            "observed_minimum": int(observed_minimum) if observed_minimum is not None else None,
+            "observed_maximum": int(observed_maximum) if observed_maximum is not None else None,
+            "activities_with_hr": len(extrema),
+        }
+
+
+def heart_rate_record_history(limit=100):
+    with connect() as connection:
+        return connection.execute(
+            """
+            SELECT record_type, heart_rate, activity_id, observed_at, recorded_at
+            FROM heart_rate_record_history
+            ORDER BY recorded_at DESC, id DESC LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+
+def activity_heart_rate_extrema(limit=100):
+    with connect() as connection:
+        return connection.execute(
+            """
+            SELECT e.activity_id, a.start_time, e.minimum_hr, e.maximum_hr,
+                   e.minimum_observed_at, e.maximum_observed_at
+            FROM activity_hr_extrema e
+            LEFT JOIN activities a ON a.activity_id = e.activity_id
+            ORDER BY e.maximum_hr DESC, a.start_time DESC LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()

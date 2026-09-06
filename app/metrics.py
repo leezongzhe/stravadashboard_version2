@@ -132,14 +132,30 @@ def heart_rate_zones(data, config):
     resting = config["resting_heart_rate"]
     maximum = config["maximum_heart_rate"]
     reserve = max(1, maximum - resting)
-    boundaries = [(0, .60), (.60, .70), (.70, .80), (.80, .90), (.90, 2)]
+    upper_percentages = config.get(
+        "zone_upper_percentages", [60, 70, 80, 90, 100]
+    )
+    if len(upper_percentages) != 5:
+        upper_percentages = [60, 70, 80, 90, 100]
+    upper_fractions = [float(value) / 100 for value in upper_percentages]
+    lower_fractions = [0.0] + upper_fractions[:-1]
+    boundaries = list(zip(lower_fractions, upper_fractions))
     rows = []
     total = data.loc[data["heart_rate"].notna(), "dt"].fillna(0).sum()
     for number, (low, high) in enumerate(boundaries, 1):
         lower = resting + reserve * low
         upper = resting + reserve * high
-        seconds = data.loc[data["heart_rate"].between(lower, upper, inclusive="left"), "dt"].fillna(0).sum()
-        rows.append({"Zone": f"Z{number}", "Lower_bpm": round(lower), "Upper_bpm": round(min(upper, maximum)), "Seconds": seconds, "Percent": seconds / total * 100 if total else 0})
+        inclusive = "both" if number == len(boundaries) else "left"
+        seconds = data.loc[
+            data["heart_rate"].between(lower, upper, inclusive=inclusive), "dt"
+        ].fillna(0).sum()
+        rows.append({
+            "Zone": f"Z{number}",
+            "Lower_bpm": round(lower),
+            "Upper_bpm": round(min(upper, maximum)),
+            "Seconds": seconds,
+            "Percent": seconds / total * 100 if total else 0,
+        })
     return pd.DataFrame(rows)
 
 

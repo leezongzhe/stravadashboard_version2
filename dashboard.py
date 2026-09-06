@@ -1,4 +1,5 @@
 import sqlite3
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
 import pandas as pd
@@ -7,8 +8,19 @@ import plotly.graph_objects as go
 import pydeck as pdk
 import streamlit as st
 
-from app.config import DB_PATH, load_config
-from app.database import initialize_database
+from app.config import (
+    DB_PATH,
+    load_config,
+    resolve_maximum_heart_rate,
+    resolve_resting_heart_rate,
+    save_config,
+)
+from app.database import (
+    activity_heart_rate_extrema,
+    heart_rate_record_history,
+    initialize_database,
+    refresh_heart_rate_records,
+)
 from app.metrics import (
     activity_summary,
     aerobic_decoupling,
@@ -26,6 +38,21 @@ from app.metrics import (
 st.set_page_config(page_title="Strava Dashboard v2", page_icon="🏃", layout="wide")
 initialize_database()
 config = load_config()
+hr_observations = refresh_heart_rate_records(
+    config.get("minimum_valid_heart_rate", 40),
+    config.get("maximum_valid_heart_rate", 240),
+)
+active_resting_hr, resting_hr_source = resolve_resting_heart_rate(
+    config, hr_observations["observed_minimum"]
+)
+active_maximum_hr, maximum_hr_source = resolve_maximum_heart_rate(
+    config, hr_observations["observed_maximum"]
+)
+if active_resting_hr >= active_maximum_hr:
+    active_resting_hr = min(60, active_maximum_hr - 1)
+    resting_hr_source = "Safety fallback: observed resting HR was not below maximum HR"
+config["resting_heart_rate"] = active_resting_hr
+config["maximum_heart_rate"] = active_maximum_hr
 
 st.markdown(
     """
@@ -198,7 +225,6 @@ st.caption("Deterministic synchronization, historical trends, best efforts, hear
 activities = load_activities()
 if activities.empty:
     st.warning("No activity metadata is available. Run `python sync.py --local-only` first.")
-    st.stop()
 
 activities["start_time"] = pd.to_datetime(activities["start_time"], errors="coerce", utc=True)
 activities["distance_km"] = activities["distance_m"] / 1000
@@ -221,8 +247,8 @@ if selected_years:
 if selected_types:
     filtered = filtered[filtered["activity_type"].isin(selected_types)]
 
-tab_history, tab_activity, tab_compare, tab_imports = st.tabs([
-    "Training history", "Activity analysis", "Compare", "Import health"
+tab_history, tab_activity, tab_compare, tab_imports, tab_settings = st.tabs([
+    "Training history", "Activity analysis", "Compare", "Import health", "Settings"
 ])
 
 with tab_history:
@@ -509,4 +535,214 @@ with tab_imports:
     problems = activities[activities["import_status"] != "imported"].copy()
     st.dataframe(problems[["activity_id", "source", "import_status", "retry_count", "last_error", "updated_at"]], hide_index=True, width="stretch")
     st.caption("A repeated download failure becomes `tcx_unavailable`; it will remain visible here without blocking future synchronization.")
+
+with tab_settings:
+    st.subheader("Heart-rate profile and calculation settings")
+    st.caption(
+        "Automatic values are rebuilt from valid heart-rate samples in all imported TCX files. "
+        "A new high or low record updates the active zones on the next dashboard refresh."
+    )
+
+    status_columns = st.columns(4)
+    status_columns[0].metric("Active resting HR", f"{active_resting_hr} bpm")
+    status_columns[1].metric("Active maximum HR", f"{active_maximum_hr} bpm")
+    status_columns[2].metric(
+        "Lowest activity HR",
+        f"{hr_observations['observed_minimum']} bpm"
+        if hr_observations["observed_minimum"] is not None else "No data",
+    )
+    status_columns[3].metric(
+        "Highest activity HR",
+        f"{hr_observations['observed_maximum']} bpm"
+        if hr_observations["observed_maximum"] is not None else "No data",
+    )
+    st.caption(f"Resting-HR source: {resting_hr_source} · Maximum-HR source: {maximum_hr_source}")
+    st.warning(
+        "The lowest HR recorded during exercise is not a clinical resting-heart-rate measurement. "
+        "For more accurate zones, enter a morning, sleep, or clinician-measured resting HR manually."
+    )
+
+    with st.form("dashboard_settings"):
+        source_left, source_right = st.columns(2)
+        resting_mode_label = source_left.radio(
+            "Resting-heart-rate source",
+            ["Automatic: lowest downloaded TCX value", "Manual override"],
+            index=1 if config.get("resting_heart_rate_mode") == "manual" else 0,
+        )
+        maximum_mode_label = source_right.radio(
+            "Maximum-heart-rate source",
+            ["Automatic: highest downloaded TCX value", "Manual override"],
+            index=1 if config.get("maximum_heart_rate_mode") == "manual" else 0,
+        )
+
+        manual_left, manual_right = st.columns(2)
+        manual_resting = manual_left.number_input(
+            "Manual resting HR (bpm)", min_value=30, max_value=140,
+            value=int(config.get("manual_resting_heart_rate") or active_resting_hr), step=1,
+        )
+        manual_maximum = manual_right.number_input(
+            "Manual maximum HR (bpm)", min_value=100, max_value=240,
+            value=int(config.get("manual_maximum_heart_rate") or active_maximum_hr), step=1,
+        )
+
+        st.markdown("#### Heart-rate zone upper limits")
+        st.caption(
+            "Zones use heart-rate reserve: resting HR + percentage × (maximum HR − resting HR)."
+        )
+        configured_zone_limits = config.get("zone_upper_percentages", [60, 70, 80, 90, 100])
+        if len(configured_zone_limits) != 5:
+            configured_zone_limits = [60, 70, 80, 90, 100]
+        zone_columns = st.columns(5)
+        zone_limits = [
+            zone_columns[index].number_input(
+                f"Zone {index + 1} upper (%)", min_value=1, max_value=100,
+                value=int(configured_zone_limits[index]), step=1,
+            )
+            for index in range(5)
+        ]
+
+        st.markdown("#### Data-quality and dashboard settings")
+        valid_left, valid_right, timezone_column = st.columns(3)
+        minimum_valid_hr = valid_left.number_input(
+            "Minimum valid sensor HR", min_value=20, max_value=150,
+            value=int(config.get("minimum_valid_heart_rate", 40)), step=1,
+        )
+        maximum_valid_hr = valid_right.number_input(
+            "Maximum valid sensor HR", min_value=120, max_value=260,
+            value=int(config.get("maximum_valid_heart_rate", 240)), step=1,
+        )
+        timezone_name = timezone_column.text_input(
+            "Timezone", value=str(config.get("timezone", "UTC")),
+            help="Use an IANA name such as Asia/Kuala_Lumpur or Europe/London.",
+        )
+
+        advanced_left, advanced_middle, advanced_right = st.columns(3)
+        moving_threshold = advanced_left.number_input(
+            "Moving threshold (m/s)", min_value=0.1, max_value=3.0,
+            value=float(config.get("moving_speed_threshold_mps", 0.5)), step=0.1,
+        )
+        maximum_gap = advanced_middle.number_input(
+            "Maximum moving gap (seconds)", min_value=1, max_value=120,
+            value=int(config.get("maximum_moving_gap_seconds", 10)), step=1,
+        )
+        altitude_window = advanced_right.number_input(
+            "Altitude smoothing points", min_value=3, max_value=101,
+            value=int(config.get("altitude_smoothing_points", 15)), step=2,
+        )
+        retry_limit = st.number_input(
+            "Automatic download retry limit", min_value=1, max_value=10,
+            value=int(config.get("automatic_retry_limit", 2)), step=1,
+        )
+
+        save_settings = st.form_submit_button("Save settings", type="primary")
+
+    if save_settings:
+        errors = []
+        if not all(zone_limits[index] < zone_limits[index + 1] for index in range(4)):
+            errors.append("Zone upper limits must increase strictly from Zone 1 to Zone 5.")
+        if zone_limits[-1] != 100:
+            errors.append("Zone 5 must end at 100%.")
+        if minimum_valid_hr >= maximum_valid_hr:
+            errors.append("Minimum valid sensor HR must be below maximum valid sensor HR.")
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            errors.append("Timezone is not a recognized IANA timezone name.")
+
+        candidate_resting = (
+            int(manual_resting)
+            if resting_mode_label == "Manual override"
+            else hr_observations["observed_minimum"] or int(config.get("fallback_resting_heart_rate", 60))
+        )
+        candidate_maximum = (
+            int(manual_maximum)
+            if maximum_mode_label == "Manual override"
+            else hr_observations["observed_maximum"] or int(config.get("fallback_maximum_heart_rate", 190))
+        )
+        if candidate_resting >= candidate_maximum:
+            errors.append("The active resting HR must be lower than the active maximum HR.")
+
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            save_config({
+                "resting_heart_rate_mode": (
+                    "manual" if resting_mode_label == "Manual override" else "observed"
+                ),
+                "manual_resting_heart_rate": int(manual_resting),
+                "maximum_heart_rate_mode": (
+                    "manual" if maximum_mode_label == "Manual override" else "observed"
+                ),
+                "manual_maximum_heart_rate": int(manual_maximum),
+                "zone_upper_percentages": [int(value) for value in zone_limits],
+                "minimum_valid_heart_rate": int(minimum_valid_hr),
+                "maximum_valid_heart_rate": int(maximum_valid_hr),
+                "timezone": timezone_name,
+                "moving_speed_threshold_mps": float(moving_threshold),
+                "maximum_moving_gap_seconds": int(maximum_gap),
+                "altitude_smoothing_points": int(altitude_window),
+                "automatic_retry_limit": int(retry_limit),
+            })
+            refresh_heart_rate_records(minimum_valid_hr, maximum_valid_hr)
+            st.cache_data.clear()
+            st.success("Settings saved. Heart-rate records and zones were recalculated.")
+            st.rerun()
+
+    reserve = active_maximum_hr - active_resting_hr
+    zone_rows = []
+    previous_limit = 0
+    for zone_number, upper_limit in enumerate(config.get("zone_upper_percentages", [60, 70, 80, 90, 100]), 1):
+        lower_bpm = active_resting_hr + reserve * previous_limit / 100
+        upper_bpm = active_resting_hr + reserve * upper_limit / 100
+        zone_rows.append({
+            "Zone": f"Zone {zone_number}",
+            "HR reserve interval": f"{previous_limit}–{upper_limit}%",
+            "Active interval": f"{round(lower_bpm)}–{round(upper_bpm)} bpm",
+        })
+        previous_limit = upper_limit
+    st.markdown("#### Current calculated zones")
+    st.dataframe(pd.DataFrame(zone_rows), hide_index=True, width="stretch")
+
+    history_rows = [dict(row) for row in heart_rate_record_history()]
+    st.markdown("#### All-time HR record changes")
+    if history_rows:
+        record_frame = pd.DataFrame(history_rows)
+        record_frame["Record"] = record_frame["record_type"].map({
+            "minimum": "New lowest activity HR",
+            "maximum": "New highest activity HR",
+        })
+        record_frame["Heart rate"] = record_frame["heart_rate"].astype(str) + " bpm"
+        record_frame["Observed"] = pd.to_datetime(
+            record_frame["observed_at"], errors="coerce", utc=True
+        ).dt.tz_convert(config["timezone"]).dt.strftime("%d %b %Y %H:%M")
+        st.dataframe(
+            record_frame[["Record", "Heart rate", "Observed"]],
+            hide_index=True, width="stretch",
+        )
+    else:
+        st.info("No valid TCX heart-rate records have been imported yet.")
+
+    extrema_rows = [dict(row) for row in activity_heart_rate_extrema(25)]
+    st.markdown("#### Highest-HR activities")
+    if extrema_rows:
+        extrema_frame = pd.DataFrame(extrema_rows)
+        extrema_frame["Activity date"] = pd.to_datetime(
+            extrema_frame["start_time"], errors="coerce", utc=True
+        ).dt.tz_convert(config["timezone"]).dt.strftime("%d %b %Y %H:%M")
+        extrema_frame = extrema_frame.merge(
+            activities[["activity_id", "distance_km"]], on="activity_id", how="left"
+        )
+        extrema_frame["Distance"] = extrema_frame["distance_km"].map(
+            lambda value: f"{value:.2f} km" if pd.notna(value) else "--"
+        )
+        extrema_frame = extrema_frame.rename(columns={
+            "minimum_hr": "Minimum HR", "maximum_hr": "Maximum HR",
+        })
+        st.dataframe(
+            extrema_frame[["Activity date", "Distance", "Minimum HR", "Maximum HR"]],
+            hide_index=True, width="stretch",
+        )
+    else:
+        st.info("No activities with valid heart-rate samples are available.")
 

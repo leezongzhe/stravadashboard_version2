@@ -2,8 +2,14 @@ import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .config import INCOMING_DIR
-from .database import connect, initialize_database, record_event, utc_now
+from .config import INCOMING_DIR, load_config
+from .database import (
+    connect,
+    initialize_database,
+    record_event,
+    refresh_heart_rate_records,
+    utc_now,
+)
 
 
 TCX_NS = {
@@ -30,6 +36,14 @@ def file_checksum(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def refresh_imported_heart_rate_records():
+    config = load_config()
+    return refresh_heart_rate_records(
+        config.get("minimum_valid_heart_rate", 40),
+        config.get("maximum_valid_heart_rate", 240),
+    )
 
 
 def parse_tcx(path):
@@ -151,6 +165,10 @@ def import_tcx(path, force=False):
             )
             record_event(connection, metadata["activity_id"], "imported", path.name)
             connection.commit()
+        try:
+            refresh_imported_heart_rate_records()
+        except Exception as record_error:
+            print(f"[WARN] Heart-rate records could not be refreshed: {record_error}")
         return "imported", len(points)
     except Exception as error:
         now = utc_now()
@@ -187,4 +205,6 @@ def import_all(force=False):
         except Exception as error:
             results["failed"] += 1
             print(f"[ERROR] {path.name}: {error}")
+    # Backfill/rebuild records even when every file was already unchanged.
+    refresh_imported_heart_rate_records()
     return results

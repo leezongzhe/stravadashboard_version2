@@ -14,6 +14,9 @@ Version 2 keeps the original project intact and provides a more reliable synchro
 - TCX checksums prevent unnecessary re-imports.
 - Historical, comparison, route, split, best-effort, HR-zone and quality views are included.
 - Altitude is smoothed before elevation and grade calculations.
+- A Settings page controls personal HR zones and analysis thresholds.
+- Lowest/highest valid TCX heart rates are recorded dynamically and used by
+  default until the user selects manual resting or maximum HR values.
 
 ## First-time setup
 
@@ -70,7 +73,28 @@ Copy the example configuration and then edit your private copy:
 Copy-Item config.example.json config.json
 ```
 
-Edit `config.json` to set the timezone, resting heart rate, maximum heart rate, movement thresholds, altitude smoothing, and automatic retry limit. `config.json` is excluded from Git because it may contain personal values.
+Use the dashboard's **Settings** tab to set the timezone, automatic or manual
+resting/maximum HR sources, five HR-zone limits, valid sensor range, movement
+threshold, recording-gap limit, altitude smoothing, and download retry limit.
+The private values are saved to `config.json`, which is excluded from Git.
+
+## Dynamic heart-rate records and zones
+
+Version 2 stores per-activity HR minima/maxima and an all-time record history in
+SQLite. After each TCX import it rebuilds the current extrema. A higher valid HR
+becomes the automatic maximum; a lower valid activity HR becomes the automatic
+resting input. Manual settings override either automatic value independently.
+
+Zones use the heart-rate-reserve calculation:
+
+```text
+zone boundary = resting HR + percentage × (maximum HR − resting HR)
+```
+
+The default upper percentages are 60%, 70%, 80%, 90%, and 100%, and all five can
+be customized. The lowest exercise HR is not necessarily a true physiological
+resting HR, so a measured morning, sleep, or clinical value is preferable when
+available.
 
 ## Data and privacy
 
