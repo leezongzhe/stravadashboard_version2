@@ -85,6 +85,13 @@ SQLite. After each TCX import it rebuilds the current extrema. A higher valid HR
 becomes the automatic maximum; a lower valid activity HR becomes the automatic
 resting input. Manual settings override either automatic value independently.
 
+“Highest-HR activities” includes imported activities that contain at least one
+heart-rate sample inside the valid sensor range configured in Settings. For each
+activity, the dashboard takes its single highest valid TCX sample, sorts the
+activities from highest to lowest, and shows the first 25. Equal maxima are
+ordered by activity date. Both this list and the all-time record history include
+links that open and preselect the corresponding Activity analysis.
+
 Zones use the heart-rate-reserve calculation:
 
 ```text

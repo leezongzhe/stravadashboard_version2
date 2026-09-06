@@ -1,4 +1,6 @@
+import html
 import sqlite3
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
@@ -143,6 +145,31 @@ st.markdown(
     section[data-testid="stSidebar"] h2,
     section[data-testid="stSidebar"] p { color: #f4faf7; }
     hr { border-color: rgba(38, 92, 70, 0.12); }
+    .hr-report { display: grid; gap: 0.55rem; margin: 0.6rem 0 1.2rem; }
+    .hr-report-row {
+        display: grid; gap: 0.75rem; align-items: center;
+        padding: 0.78rem 1rem; border-radius: 16px;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(38, 92, 70, 0.11);
+        box-shadow: 0 5px 16px rgba(31, 72, 57, 0.045);
+    }
+    .hr-report-header {
+        color: #587067; font-size: 0.82rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.035em;
+        background: transparent; border: 0; box-shadow: none;
+        padding-top: 0.3rem; padding-bottom: 0.3rem;
+    }
+    .hr-report-cell { min-width: 0; overflow-wrap: anywhere; color: #17352b; }
+    .hr-analysis-link {
+        display: inline-block; width: fit-content; padding: 0.42rem 0.8rem;
+        border-radius: 999px; background: #edf5f1; color: #1f664e !important;
+        font-weight: 650; text-decoration: none !important;
+    }
+    .hr-analysis-link:hover { background: #dcece5; color: #17352b !important; }
+    @media (max-width: 800px) {
+        .hr-report-row { grid-template-columns: 1fr !important; }
+        .hr-report-header { display: none; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -191,18 +218,30 @@ def month_name(month):
     return pd.Timestamp(year=2000, month=int(month), day=1).strftime("%B")
 
 
-def activity_period_filter(frame, key_prefix):
+def activity_period_filter(frame, key_prefix, initial_activity_id=None):
     """Render year/month controls and return matching activities."""
     dated = frame.dropna(subset=["start_time"]).copy()
     years = sorted(dated["start_time"].dt.year.unique(), reverse=True)
     if not years:
         return dated
+    target = dated[dated["activity_id"].astype(str) == str(initial_activity_id)]
+    target_year = int(target.iloc[0]["start_time"].year) if not target.empty else None
+    year_index = years.index(target_year) if target_year in years else 0
+    key_suffix = f"_{initial_activity_id}" if initial_activity_id else ""
     year_column, month_column = st.columns(2)
-    selected_year = year_column.selectbox("Year", years, key=f"{key_prefix}_year")
+    selected_year = year_column.selectbox(
+        "Year", years, index=year_index, key=f"{key_prefix}_year{key_suffix}"
+    )
     year_data = dated[dated["start_time"].dt.year == selected_year].copy()
     months = sorted(year_data["start_time"].dt.month.unique(), reverse=True)
+    target_month = (
+        int(target.iloc[0]["start_time"].month)
+        if not target.empty and target_year == selected_year else None
+    )
+    month_index = months.index(target_month) if target_month in months else 0
     selected_month = month_column.selectbox(
-        "Month", months, format_func=month_name, key=f"{key_prefix}_month"
+        "Month", months, index=month_index, format_func=month_name,
+        key=f"{key_prefix}_month{key_suffix}",
     )
     return year_data[year_data["start_time"].dt.month == selected_month].copy()
 
@@ -219,6 +258,37 @@ def add_activity_labels(frame):
     return labelled
 
 
+def activity_analysis_url(activity_id):
+    return f"?view=activity&activity_id={quote(str(activity_id), safe='')}"
+
+
+def render_linked_report(frame, columns):
+    """Render rounded report rows with an explicit internal activity link."""
+    template = " ".join("minmax(0, 1fr)" for _ in range(len(columns) + 1))
+    parts = [f'<div class="hr-report" style="--report-columns:{len(columns) + 1}">']
+    headings = "".join(
+        f'<div class="hr-report-cell">{html.escape(label)}</div>'
+        for label, _ in columns
+    )
+    parts.append(
+        f'<div class="hr-report-row hr-report-header" style="grid-template-columns:{template}">'
+        f'{headings}<div class="hr-report-cell">Activity analysis</div></div>'
+    )
+    for _, row in frame.iterrows():
+        cells = "".join(
+            f'<div class="hr-report-cell">{html.escape(str(row[field]))}</div>'
+            for _, field in columns
+        )
+        url = html.escape(activity_analysis_url(row["activity_id"]), quote=True)
+        parts.append(
+            f'<div class="hr-report-row" style="grid-template-columns:{template}">'
+            f'{cells}<div class="hr-report-cell"><a class="hr-analysis-link" '
+            f'href="{url}" target="_self">Open analysis →</a></div></div>'
+        )
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
 st.title("🏃 Strava Dashboard — Version 2")
 st.caption("Deterministic synchronization, historical trends, best efforts, heart-rate zones and data-quality checks.")
 
@@ -229,6 +299,15 @@ if activities.empty:
 activities["start_time"] = pd.to_datetime(activities["start_time"], errors="coerce", utc=True)
 activities["distance_km"] = activities["distance_m"] / 1000
 imported = activities[activities["import_status"] == "imported"].copy()
+requested_activity_id = str(st.query_params.get("activity_id", ""))
+available_activity_ids = set(imported["activity_id"].astype(str))
+if requested_activity_id not in available_activity_ids:
+    requested_activity_id = ""
+default_dashboard_tab = (
+    "Activity analysis"
+    if st.query_params.get("view") == "activity" and requested_activity_id
+    else "Training history"
+)
 
 with st.sidebar:
     st.header("Dashboard controls")
@@ -249,7 +328,7 @@ if selected_types:
 
 tab_history, tab_activity, tab_compare, tab_imports, tab_settings = st.tabs([
     "Training history", "Activity analysis", "Compare", "Import health", "Settings"
-])
+], default=default_dashboard_tab, key="dashboard_section")
 
 with tab_history:
     total_distance = filtered["distance_km"].sum()
@@ -297,11 +376,19 @@ with tab_activity:
         st.info("No imported activities are available.")
     else:
         st.subheader("Choose an activity")
-        choices = add_activity_labels(activity_period_filter(imported, "activity"))
+        choices = add_activity_labels(activity_period_filter(
+            imported, "activity", requested_activity_id or None
+        ))
         label_lookup = choices.set_index("activity_id")["label"].to_dict()
+        choice_ids = list(choices["activity_id"])
+        selected_index = (
+            choice_ids.index(requested_activity_id)
+            if requested_activity_id in choice_ids else 0
+        )
         selected_id = st.selectbox(
-            "Activity", choices["activity_id"],
+            "Activity", choice_ids, index=selected_index,
             format_func=lambda value: label_lookup[value],
+            key=f"activity_selection_{requested_activity_id or 'default'}",
         )
         raw = load_points(selected_id)
         data = prepare_trackpoints(raw, config)
@@ -716,15 +803,21 @@ with tab_settings:
         record_frame["Observed"] = pd.to_datetime(
             record_frame["observed_at"], errors="coerce", utc=True
         ).dt.tz_convert(config["timezone"]).dt.strftime("%d %b %Y %H:%M")
-        st.dataframe(
-            record_frame[["Record", "Heart rate", "Observed"]],
-            hide_index=True, width="stretch",
+        render_linked_report(
+            record_frame,
+            [("Record", "Record"), ("Heart rate", "Heart rate"), ("Observed", "Observed")],
         )
     else:
         st.info("No valid TCX heart-rate records have been imported yet.")
 
     extrema_rows = [dict(row) for row in activity_heart_rate_extrema(25)]
     st.markdown("#### Highest-HR activities")
+    st.caption(
+        "Selection method: imported activities with at least one HR sample inside the "
+        f"configured valid range ({config.get('minimum_valid_heart_rate', 40)}–"
+        f"{config.get('maximum_valid_heart_rate', 240)} bpm) are ranked by their single "
+        "highest valid TCX sample. The first 25 are shown; ties are ordered by activity date."
+    )
     if extrema_rows:
         extrema_frame = pd.DataFrame(extrema_rows)
         extrema_frame["Activity date"] = pd.to_datetime(
@@ -739,9 +832,14 @@ with tab_settings:
         extrema_frame = extrema_frame.rename(columns={
             "minimum_hr": "Minimum HR", "maximum_hr": "Maximum HR",
         })
-        st.dataframe(
-            extrema_frame[["Activity date", "Distance", "Minimum HR", "Maximum HR"]],
-            hide_index=True, width="stretch",
+        render_linked_report(
+            extrema_frame,
+            [
+                ("Activity date", "Activity date"),
+                ("Distance", "Distance"),
+                ("Minimum HR", "Minimum HR"),
+                ("Maximum HR", "Maximum HR"),
+            ],
         )
     else:
         st.info("No activities with valid heart-rate samples are available.")
