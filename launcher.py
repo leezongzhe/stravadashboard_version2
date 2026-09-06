@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--dashboard-only", action="store_true", help="Skip synchronization")
     parser.add_argument("--local-only", action="store_true", help="Import local TCX files without opening Strava")
     parser.add_argument("--retry-failed", action="store_true", help="Retry unavailable and failed downloads")
+    parser.add_argument("--full-history", action="store_true", help="Force another all-pages history scan")
     args = parser.parse_args()
 
     if not check_dependencies():
@@ -30,7 +31,7 @@ def main():
 
     if not args.dashboard_only:
         from app.sync import synchronize
-        result = asyncio.run(synchronize(args.retry_failed, args.local_only))
+        result = asyncio.run(synchronize(args.retry_failed, args.local_only, args.full_history))
         print(f"Synchronization completed: {result}")
 
     subprocess.run(

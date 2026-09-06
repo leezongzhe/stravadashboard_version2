@@ -17,6 +17,11 @@ Version 2 keeps the original project intact and provides a more reliable synchro
 - A Settings page controls personal HR zones and analysis thresholds.
 - Lowest/highest valid TCX heart rates are recorded dynamically and used by
   default until the user selects manual resting or maximum HR values.
+- The first successful synchronization traverses every Strava training-history
+  page. Later synchronizations inspect only the newest page.
+- GPS-only activities remain available even when the TCX contains no heart rate.
+- Multi-lap TCX metadata is aggregated across every lap, preventing activity-list
+  distance/time values from showing only the first lap.
 
 ## First-time setup
 
@@ -52,6 +57,29 @@ Close other Chrome windows using the Version 2 profile before synchronization.
 
 Google Chrome and Python 3.10 or newer are required.
 
+## Initial full-history synchronization
+
+The first synchronization after this feature is installed scans every page in
+the Strava training log, registers all discovered activity IDs, and downloads the
+pending TCX files. The console reports each page and the cumulative activity
+count. Only after pagination finishes successfully is
+`initial_history_scan_complete=true` saved in the database's `app_settings`
+table. If navigation fails or a page repeats, the completion flag is not saved
+and the full scan is attempted again on the next run.
+
+After the completion flag exists, normal runs inspect only page one. Historical
+activities that were already registered but whose download was interrupted stay
+in the database download queue, so they continue downloading without revisiting
+all Strava pages.
+
+To deliberately repeat the all-pages inspection:
+
+```powershell
+.\.venv\Scripts\python.exe sync.py --full-history
+```
+
+This is useful when testing pagination or rebuilding the discovery list.
+
 ## Useful modes
 
 ```powershell
@@ -63,7 +91,20 @@ Google Chrome and Python 3.10 or newer are required.
 
 # Retry activities previously marked unavailable or failed
 .\.venv\Scripts\python.exe launcher.py --retry-failed
+
+# Force another scan of every training-history page
+.\.venv\Scripts\python.exe launcher.py --full-history
 ```
+
+## Activities without heart rate
+
+A TCX file with GPS/time/distance but no heart-rate samples is still imported as
+a normal activity. Training history, activity selection, route map, pace,
+distance, time, elevation, splits, best efforts, and data-quality reporting stay
+available. HR values display as `--`; HR-zone, HR-profile, aerobic-decoupling,
+and HR-efficiency visualizations display a clear no-data message or omit only the
+activity's unavailable HR series. Such activities do not contribute to automatic
+minimum/maximum HR records or zone-boundary calculations.
 
 ## Personal configuration
 

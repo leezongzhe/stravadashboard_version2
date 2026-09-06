@@ -404,6 +404,7 @@ with tab_activity:
         )
         raw = load_points(selected_id)
         data = prepare_trackpoints(raw, config)
+        has_heart_rate = data["heart_rate"].notna().any()
         summary = activity_summary(data)
         split_data = exact_splits(data)
         efforts = best_efforts(data)
@@ -433,15 +434,20 @@ with tab_activity:
 
             chart = go.Figure()
             chart.add_trace(go.Scatter(x=data["Distance (km)"], y=data["pace_smooth"], name="Pace", yaxis="y"))
-            chart.add_trace(go.Scatter(x=data["Distance (km)"], y=data["hr_smooth"], name="Heart rate", yaxis="y2"))
+            if has_heart_rate:
+                chart.add_trace(go.Scatter(x=data["Distance (km)"], y=data["hr_smooth"], name="Heart rate", yaxis="y2"))
             chart.update_layout(
                 height=430, xaxis_title="Distance (km)",
                 yaxis=dict(title="Pace (min/km)", autorange="reversed"),
-                yaxis2=dict(title="Heart rate (bpm)", overlaying="y", side="right"),
                 legend=dict(orientation="h"),
             )
+            if has_heart_rate:
+                chart.update_layout(yaxis2=dict(title="Heart rate (bpm)", overlaying="y", side="right"))
             st.plotly_chart(chart, width="stretch")
-            st.plotly_chart(px.bar(zones, x="Zone", y="Seconds", color="Zone", title="Time in heart-rate zones", hover_data=["Percent", "Lower_bpm", "Upper_bpm"]), width="stretch")
+            if has_heart_rate:
+                st.plotly_chart(px.bar(zones, x="Zone", y="Seconds", color="Zone", title="Time in heart-rate zones", hover_data=["Percent", "Lower_bpm", "Upper_bpm"]), width="stretch")
+            else:
+                st.info("No heart-rate samples were recorded for this activity. Pace and GPS analysis remain available.")
 
         with splits_tab:
             if split_data.empty:
@@ -450,7 +456,10 @@ with tab_activity:
                 shown = split_data.copy()
                 shown["Time"] = shown["Time_seconds"].apply(format_duration)
                 shown["Pace"] = shown["Pace_min_km"].apply(format_pace)
-                st.dataframe(shown[["Split", "Distance_km", "Time", "Pace", "Avg_HR", "Elevation_gain"]], hide_index=True, width="stretch")
+                shown["Average HR"] = shown["Avg_HR"].apply(
+                    lambda value: f"{value:.0f} bpm" if pd.notna(value) else "--"
+                )
+                st.dataframe(shown[["Split", "Distance_km", "Time", "Pace", "Average HR", "Elevation_gain"]], hide_index=True, width="stretch")
                 st.plotly_chart(px.bar(split_data, x="Split", y="Pace_min_km", title="Split pace"), width="stretch")
             st.subheader("Best rolling efforts")
             if efforts.empty:
@@ -466,7 +475,10 @@ with tab_activity:
             if map_data.empty:
                 st.info("No GPS data is available.")
             else:
-                color_field = st.selectbox("Route color", ["heart_rate", "pace_min_km", "speed_kmh", "altitude_smooth"])
+                color_choices = ["pace_min_km", "speed_kmh", "altitude_smooth"]
+                if has_heart_rate:
+                    color_choices.insert(0, "heart_rate")
+                color_field = st.selectbox("Route color", color_choices)
                 valid = map_data[color_field].dropna()
                 minimum, maximum = (valid.min(), valid.max()) if not valid.empty else (0, 1)
                 map_data["color"] = map_data[color_field].apply(lambda value: color_scale(value, minimum, maximum, color_field == "pace_min_km"))
@@ -476,7 +488,10 @@ with tab_activity:
                     pdk.Layer("ScatterplotLayer", map_data, get_position="[longitude, latitude]", get_fill_color="color", get_radius=6, pickable=True),
                 ]
                 view = pdk.ViewState(latitude=map_data["latitude"].mean(), longitude=map_data["longitude"].mean(), zoom=13)
-                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip={"text": "HR: {heart_rate}\nPace: {pace_min_km}\nAltitude: {altitude_smooth}"}), width="stretch")
+                tooltip_text = "Pace: {pace_min_km}\nAltitude: {altitude_smooth}"
+                if has_heart_rate:
+                    tooltip_text = "HR: {heart_rate}\n" + tooltip_text
+                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip={"text": tooltip_text}), width="stretch")
             elevation = data.dropna(subset=["Distance (km)", "altitude_smooth"])
             st.plotly_chart(px.area(elevation, x="Distance (km)", y="altitude_smooth", title="Smoothed elevation profile"), width="stretch")
             grade = data.dropna(subset=["Distance (km)", "grade_percent"])
@@ -585,14 +600,23 @@ with tab_compare:
 
             with heart_rate_tab:
                 figure = go.Figure()
+                activities_with_hr = 0
                 for activity_id, prepared in prepared_activities.items():
+                    if not prepared["heart_rate"].notna().any():
+                        continue
+                    activities_with_hr += 1
                     figure.add_trace(go.Scatter(
                         x=prepared["distance"] / 1000,
                         y=prepared["hr_smooth"],
                         name=compare_labels[activity_id],
                     ))
                 figure.update_layout(height=460, xaxis_title="Distance (km)", yaxis_title="Heart rate (bpm)")
-                st.plotly_chart(figure, width="stretch")
+                if activities_with_hr:
+                    st.plotly_chart(figure, width="stretch")
+                    if activities_with_hr < len(prepared_activities):
+                        st.caption("Activities without recorded heart rate are omitted from this HR-only chart.")
+                else:
+                    st.info("None of the selected activities contains heart-rate data.")
 
             with elevation_tab:
                 figure = go.Figure()
@@ -606,27 +630,32 @@ with tab_compare:
                 st.plotly_chart(figure, width="stretch")
 
             with relationship_tab:
-                relationship = comparison.copy()
+                relationship = comparison.dropna(subset=["avg_hr", "moving_pace"]).copy()
                 relationship["Distance (km)"] = relationship["distance_km"]
-                figure = px.scatter(
-                    relationship,
-                    x="avg_hr",
-                    y="moving_pace",
-                    size="Distance (km)",
-                    color="Activity",
-                    hover_data={
-                        "Activity": True,
-                        "Distance (km)": ":.2f",
-                        "avg_hr": ":.0f",
-                        "moving_pace": ":.2f",
-                        "elevation_gain": ":.0f",
-                    },
-                    title="Moving pace versus average heart rate",
-                )
-                figure.update_yaxes(autorange="reversed", title="Moving pace (min/km)")
-                figure.update_xaxes(title="Average heart rate (bpm)")
-                figure.update_layout(height=470)
-                st.plotly_chart(figure, width="stretch")
+                if relationship.empty:
+                    st.info("Heart-rate efficiency cannot be calculated for the selected activities because no HR data is available.")
+                else:
+                    figure = px.scatter(
+                        relationship,
+                        x="avg_hr",
+                        y="moving_pace",
+                        size="Distance (km)",
+                        color="Activity",
+                        hover_data={
+                            "Activity": True,
+                            "Distance (km)": ":.2f",
+                            "avg_hr": ":.0f",
+                            "moving_pace": ":.2f",
+                            "elevation_gain": ":.0f",
+                        },
+                        title="Moving pace versus average heart rate",
+                    )
+                    figure.update_yaxes(autorange="reversed", title="Moving pace (min/km)")
+                    figure.update_xaxes(title="Average heart rate (bpm)")
+                    figure.update_layout(height=470)
+                    st.plotly_chart(figure, width="stretch")
+                    if len(relationship) < len(comparison):
+                        st.caption("Activities without recorded heart rate are omitted from this HR-only chart.")
 
 with tab_imports:
     counts = activities.groupby("import_status").size().reset_index(name="Activities")

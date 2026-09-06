@@ -16,6 +16,7 @@ TCX_NS = {
     "tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
     "ext": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
 }
+PARSER_VERSION = 3
 
 
 def _text(element, path, namespace=TCX_NS):
@@ -53,13 +54,32 @@ def parse_tcx(path):
     if activity is None:
         raise ValueError("TCX does not contain an Activity element")
 
-    lap = activity.find("tcx:Lap", TCX_NS)
+    laps = activity.findall("tcx:Lap", TCX_NS)
     activity_id = path.stem
     sport = activity.attrib.get("Sport", "Unknown")
     start_time = _text(activity, "tcx:Id")
-    elapsed = _number(_text(lap, "tcx:TotalTimeSeconds")) if lap is not None else None
-    distance = _number(_text(lap, "tcx:DistanceMeters")) if lap is not None else None
-    calories = _number(_text(lap, "tcx:Calories")) if lap is not None else None
+    lap_elapsed = [
+        value for lap in laps
+        if (value := _number(_text(lap, "tcx:TotalTimeSeconds"))) is not None
+    ]
+    lap_distances = [
+        value for lap in laps
+        if (value := _number(_text(lap, "tcx:DistanceMeters"))) is not None
+    ]
+    lap_calories = [
+        value for lap in laps
+        if (value := _number(_text(lap, "tcx:Calories"))) is not None
+    ]
+    elapsed = sum(lap_elapsed) if lap_elapsed else None
+    # DistanceMeters belongs to each individual Lap. Summing every populated
+    # lap produces the activity total; selecting only the first lap caused the
+    # activity menu to show values such as 1.03 km for a 10.19 km run.
+    distance = (
+        sum(lap_distances)
+        if laps and len(lap_distances) == len(laps)
+        else None
+    )
+    calories = sum(lap_calories) if lap_calories else None
 
     points = []
     seen = set()
@@ -108,7 +128,7 @@ def import_tcx(path, force=False):
 
     with connect() as connection:
         existing = connection.execute(
-            "SELECT source_checksum, import_status FROM activities WHERE activity_id = ?",
+            "SELECT source_checksum, import_status, parser_version FROM activities WHERE activity_id = ?",
             (path.stem,),
         ).fetchone()
         if (
@@ -116,6 +136,7 @@ def import_tcx(path, force=False):
             and existing
             and existing["source_checksum"] == checksum
             and existing["import_status"] == "imported"
+            and int(existing["parser_version"] or 0) >= PARSER_VERSION
         ):
             return "unchanged", 0
 
@@ -144,7 +165,7 @@ def import_tcx(path, force=False):
                     distance_m, calories, source, import_status, retry_count,
                     last_error, source_file, source_checksum, parser_version,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'tcx', 'imported', 0, NULL, ?, ?, 2, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'tcx', 'imported', 0, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(activity_id) DO UPDATE SET
                     activity_type=excluded.activity_type,
                     start_time=excluded.start_time,
@@ -154,13 +175,13 @@ def import_tcx(path, force=False):
                     source='tcx', import_status='imported', retry_count=0,
                     last_error=NULL, source_file=excluded.source_file,
                     source_checksum=excluded.source_checksum,
-                    parser_version=2, updated_at=excluded.updated_at
+                    parser_version=excluded.parser_version, updated_at=excluded.updated_at
                 """,
                 (
                     metadata["activity_id"], metadata["activity_type"],
                     metadata["start_time"], metadata["elapsed_seconds"],
                     metadata["distance_m"], metadata["calories"], path.name,
-                    checksum, now, now,
+                    checksum, PARSER_VERSION, now, now,
                 ),
             )
             record_event(connection, metadata["activity_id"], "imported", path.name)

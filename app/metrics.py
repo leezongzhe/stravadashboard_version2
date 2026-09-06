@@ -129,6 +129,9 @@ def best_efforts(data):
 
 
 def heart_rate_zones(data, config):
+    columns = ["Zone", "Lower_bpm", "Upper_bpm", "Seconds", "Percent"]
+    if "heart_rate" not in data or not data["heart_rate"].notna().any():
+        return pd.DataFrame(columns=columns)
     resting = config["resting_heart_rate"]
     maximum = config["maximum_heart_rate"]
     reserve = max(1, maximum - resting)
@@ -156,7 +159,7 @@ def heart_rate_zones(data, config):
             "Seconds": seconds,
             "Percent": seconds / total * 100 if total else 0,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=columns)
 
 
 def aerobic_decoupling(data):

@@ -228,6 +228,32 @@ def reset_failures():
         connection.commit()
 
 
+def get_app_setting(key, default=None):
+    """Read a small internal state value from the dashboard database."""
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key = ?",
+            (str(key),),
+        ).fetchone()
+    return row[0] if row else default
+
+
+def set_app_setting(key, value):
+    """Persist internal state without placing it in the user's config file."""
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO app_settings(setting_key, setting_value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value=excluded.setting_value,
+                updated_at=excluded.updated_at
+            """,
+            (str(key), str(value), utc_now()),
+        )
+        connection.commit()
+
+
 def refresh_heart_rate_records(minimum_valid=40, maximum_valid=240):
     """Rebuild activity extrema and append newly established all-time records."""
     minimum_valid = int(minimum_valid)

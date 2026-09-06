@@ -8,16 +8,20 @@ from playwright.async_api import async_playwright
 
 from .config import BROWSER_DATA_DIR, INCOMING_DIR, load_config
 from .database import (
+    get_app_setting,
     imported_activity_ids,
     initialize_database,
     record_download_failure,
     register_discovered,
     reset_failures,
+    retryable_activity_ids,
+    set_app_setting,
 )
 from .importer import import_all, import_tcx
 
 
 TRAINING_URL = "https://www.strava.com/athlete/training"
+INITIAL_HISTORY_SCAN_SETTING = "initial_history_scan_complete"
 
 
 class ChromeSession:
@@ -160,35 +164,140 @@ async def ensure_login(page):
     print("[OK] Strava login completed and saved in Version 2 browser_data.")
 
 
-async def discover_activity_ids(page, scroll_rounds=12):
-    """Scroll the training log to include lazy-loaded historical activities."""
-    await page.goto(TRAINING_URL, wait_until="domcontentloaded")
-    await asyncio.sleep(3)
-    previous_height = 0
-    stable_rounds = 0
-    for _ in range(scroll_rounds):
-        height = await page.evaluate("document.body.scrollHeight")
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(1)
-        if height == previous_height:
-            stable_rounds += 1
-            if stable_rounds >= 2:
-                break
-        else:
-            stable_rounds = 0
-        previous_height = height
-
-    hrefs = await page.eval_on_selector_all(
-        "a[href*='/activities/']",
-        "elements => elements.map(element => element.getAttribute('href'))",
-    )
+def _extract_activity_ids(hrefs):
     ids = set()
     for href in hrefs:
         match = re.search(r"/activities/(\d+)", href or "")
         if match:
             ids.add(match.group(1))
-    print(f"[OK] Discovered {len(ids)} activities.")
     return ids
+
+
+def _pagination_total(text):
+    match = re.search(r"\b\d+\s*[-–]\s*\d+\s+of\s+([\d,]+)\b", text or "", re.I)
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+async def _activity_ids_on_page(page):
+    hrefs = await page.eval_on_selector_all(
+        "a[href*='/activities/']",
+        "elements => elements.map(element => element.getAttribute('href'))",
+    )
+    return _extract_activity_ids(hrefs)
+
+
+async def _find_next_control(page):
+    next_name = re.compile(r"^\s*(next|next page|→|›|>)\s*$", re.I)
+    candidates = [
+        page.locator("a[rel='next']"),
+        page.locator("button[aria-label*='next' i]"),
+        page.locator("a[aria-label*='next' i]"),
+        page.get_by_role("button", name=next_name),
+        page.get_by_role("link", name=next_name),
+    ]
+    for candidate in candidates:
+        if not await candidate.count():
+            continue
+        control = candidate.first
+        if not await control.is_visible() or not await control.is_enabled():
+            continue
+        aria_disabled = (await control.get_attribute("aria-disabled") or "").lower()
+        classes = (await control.get_attribute("class") or "").lower().split()
+        if aria_disabled == "true" or "disabled" in classes:
+            continue
+        return control
+    return None
+
+
+async def discover_activity_ids(
+    page,
+    full_history=False,
+    scroll_rounds=12,
+    settle_seconds=3,
+    max_pages=500,
+):
+    """Discover page one, or traverse every training page for an initial scan."""
+    await page.goto(TRAINING_URL, wait_until="domcontentloaded")
+    await asyncio.sleep(settle_seconds)
+    discovered = set()
+    seen_pages = set()
+    expected_total = None
+
+    for page_number in range(1, max_pages + 1):
+        # Strava can lazy-render the bottom of the current 20-row page.
+        previous_height = 0
+        stable_rounds = 0
+        for _ in range(scroll_rounds):
+            height = await page.evaluate("document.body.scrollHeight")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1)
+            if height == previous_height:
+                stable_rounds += 1
+                if stable_rounds >= 2:
+                    break
+            else:
+                stable_rounds = 0
+            previous_height = height
+
+        page_ids = await _activity_ids_on_page(page)
+        if not page_ids:
+            raise RuntimeError(f"No activity links were found on training page {page_number}.")
+        signature = tuple(sorted(page_ids))
+        if signature in seen_pages:
+            raise RuntimeError(
+                f"Training pagination repeated page {page_number}; the full scan was not marked complete."
+            )
+        seen_pages.add(signature)
+        discovered.update(page_ids)
+
+        body_text = await page.locator("body").inner_text()
+        expected_total = _pagination_total(body_text) or expected_total
+        print(
+            f"[OK] Training page {page_number}: {len(page_ids)} activities "
+            f"({len(discovered)} unique discovered)."
+        )
+        if not full_history:
+            break
+        if expected_total is not None and len(discovered) >= expected_total:
+            break
+
+        next_control = await _find_next_control(page)
+        if next_control is None:
+            if expected_total is not None and len(discovered) < expected_total:
+                raise RuntimeError(
+                    f"Strava reports {expected_total} activities, but pagination stopped after "
+                    f"discovering {len(discovered)}. The full scan will retry next time."
+                )
+            if page_number == 1 and expected_total is None and len(page_ids) >= 20:
+                raise RuntimeError(
+                    "The first page is full, but the Next control and activity total could not be found. "
+                    "The full scan was not marked complete."
+                )
+            break
+
+        previous_signature = signature
+        await next_control.click()
+        deadline = asyncio.get_running_loop().time() + 20
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+            current_ids = await _activity_ids_on_page(page)
+            if current_ids and tuple(sorted(current_ids)) != previous_signature:
+                break
+        else:
+            raise RuntimeError(
+                f"Strava did not advance beyond training page {page_number}. "
+                "The full scan will retry next time."
+            )
+        await asyncio.sleep(0.75)
+    else:
+        raise RuntimeError(f"Training history exceeded the safety limit of {max_pages} pages.")
+
+    if full_history and expected_total is not None and len(discovered) < expected_total:
+        raise RuntimeError(
+            f"Full history scan found {len(discovered)} of {expected_total} activities."
+        )
+    print(f"[OK] Discovered {len(discovered)} activities across {len(seen_pages)} page(s).")
+    return discovered
 
 
 async def download_tcx(page, activity_id):
@@ -209,7 +318,7 @@ async def download_tcx(page, activity_id):
         await download_page.close()
 
 
-async def synchronize(retry_failed=False, skip_browser=False):
+async def synchronize(retry_failed=False, skip_browser=False, force_full_history=False):
     initialize_database()
     config = load_config()
     if retry_failed:
@@ -227,12 +336,28 @@ async def synchronize(retry_failed=False, skip_browser=False):
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await ensure_login(page)
-            discovered = await discover_activity_ids(page)
+            initial_scan_complete = (
+                get_app_setting(INITIAL_HISTORY_SCAN_SETTING) == "true"
+            )
+            full_history = force_full_history or not initial_scan_complete
+            if full_history:
+                reason = "requested" if force_full_history else "first successful synchronization"
+                print(f"[*] Full training-history scan enabled ({reason}).")
+            else:
+                print("[*] Initial history scan is complete; inspecting the newest page only.")
+            discovered = await discover_activity_ids(page, full_history=full_history)
             for activity_id in discovered:
                 register_discovered(activity_id)
+            if full_history:
+                set_app_setting(INITIAL_HISTORY_SCAN_SETTING, "true")
+                print("[OK] Full training-history scan recorded as complete.")
 
             handled = imported_activity_ids()
-            pending = sorted(discovered - handled)
+            pending = sorted(
+                (discovered - handled)
+                | retryable_activity_ids(int(config["automatic_retry_limit"])),
+                key=int,
+            )
             downloaded = 0
             failed = 0
             print(f"[*] {len(pending)} activities require download or retry.")
@@ -258,6 +383,7 @@ async def synchronize(retry_failed=False, skip_browser=False):
                 "discovered": len(discovered),
                 "downloaded": downloaded,
                 "failed": failed,
+                "full_history_scan": full_history,
             }
         finally:
             await context.close()
