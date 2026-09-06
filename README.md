@@ -88,9 +88,11 @@ resting input. Manual settings override either automatic value independently.
 “Highest-HR activities” includes imported activities that contain at least one
 heart-rate sample inside the valid sensor range configured in Settings. For each
 activity, the dashboard takes its single highest valid TCX sample, sorts the
-activities from highest to lowest, and shows the first 25. Equal maxima are
-ordered by activity date. Both this list and the all-time record history include
-links that open and preselect the corresponding Activity analysis.
+activities from highest to lowest, and shows the user-selected top N. The top-N
+control can range from one to the total number of imported activities containing
+valid HR data. Equal maxima are ordered by activity date. Both this list and the
+all-time record history include links that open and preselect the corresponding
+Activity analysis.
 
 Zones use the heart-rate-reserve calculation:
 

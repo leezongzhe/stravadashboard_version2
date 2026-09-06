@@ -810,14 +810,27 @@ with tab_settings:
     else:
         st.info("No valid TCX heart-rate records have been imported yet.")
 
-    extrema_rows = [dict(row) for row in activity_heart_rate_extrema(25)]
     st.markdown("#### Highest-HR activities")
+    available_hr_activities = int(hr_observations.get("activities_with_hr", 0))
+    if available_hr_activities:
+        highest_hr_limit = st.number_input(
+            "Show top N activities",
+            min_value=1,
+            max_value=available_hr_activities,
+            value=min(25, available_hr_activities),
+            step=1,
+            key="highest_hr_activity_limit",
+            help="Choose how many activities to include after ranking by maximum valid HR.",
+        )
+    else:
+        highest_hr_limit = 1
     st.caption(
         "Selection method: imported activities with at least one HR sample inside the "
         f"configured valid range ({config.get('minimum_valid_heart_rate', 40)}–"
         f"{config.get('maximum_valid_heart_rate', 240)} bpm) are ranked by their single "
-        "highest valid TCX sample. The first 25 are shown; ties are ordered by activity date."
+        "highest valid TCX sample. The chosen top N are shown; ties are ordered by activity date."
     )
+    extrema_rows = [dict(row) for row in activity_heart_rate_extrema(highest_hr_limit)]
     if extrema_rows:
         extrema_frame = pd.DataFrame(extrema_rows)
         extrema_frame["Activity date"] = pd.to_datetime(
