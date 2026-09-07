@@ -13,6 +13,7 @@ Version 2 keeps the original project intact and provides a more reliable synchro
 - Imports are transactional and safe to repeat.
 - TCX checksums prevent unnecessary re-imports.
 - Historical, comparison, route, split, best-effort, HR-zone and quality views are included.
+- Training history includes both monthly and weekly distance and consistency charts.
 - Altitude is smoothed before elevation and grade calculations.
 - A Settings page controls personal HR zones and analysis thresholds.
 - Lowest/highest valid TCX heart rates are recorded dynamically and used by

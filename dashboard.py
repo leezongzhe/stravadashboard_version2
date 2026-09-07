@@ -364,6 +364,27 @@ with tab_history:
         left.plotly_chart(px.bar(monthly, x="Month", y="Distance_km", title="Monthly distance"), width="stretch")
         right.plotly_chart(px.line(monthly, x="Month", y="Activities", markers=True, title="Monthly consistency"), width="stretch")
 
+        history["Week starting"] = local_dates.dt.to_period("W-SUN").dt.start_time
+        weekly = history.groupby("Week starting", as_index=False).agg(
+            Distance_km=("distance_km", "sum"), Activities=("activity_id", "count"),
+            Duration_hours=("elapsed_seconds", lambda values: values.sum() / 3600),
+        )
+        weekly_left, weekly_right = st.columns(2)
+        weekly_left.plotly_chart(
+            px.bar(
+                weekly, x="Week starting", y="Distance_km", title="Weekly distance",
+                labels={"Distance_km": "Distance (km)"},
+            ),
+            width="stretch",
+        )
+        weekly_right.plotly_chart(
+            px.line(
+                weekly, x="Week starting", y="Activities", markers=True,
+                title="Weekly consistency", labels={"Activities": "Activities"},
+            ),
+            width="stretch",
+        )
+
         history["Date"] = history["start_time"].dt.tz_convert(config["timezone"]).dt.date
         history["Weekday"] = history["start_time"].dt.tz_convert(config["timezone"]).dt.day_name().str[:3]
         history["Week"] = history["start_time"].dt.tz_convert(config["timezone"]).dt.strftime("%Y-W%U")
