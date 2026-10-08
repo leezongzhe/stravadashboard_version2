@@ -1,14 +1,31 @@
 import json
+import os
+import sys
 from pathlib import Path
 from zoneinfo import available_timezones
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT_DIR / "strava_dashboard_v2.db"
-INCOMING_DIR = ROOT_DIR / "incoming"
-# Version 2 owns its browser profile. It never reads or writes Version 1 data.
-BROWSER_DATA_DIR = ROOT_DIR / "browser_data"
-CONFIG_PATH = ROOT_DIR / "config.json"
+APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+
+
+def _default_data_dir():
+    override = os.environ.get("STRAVA_DASHBOARD_DATA_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+        return base / "StravaDashboardV2App"
+    return Path(__file__).resolve().parent.parent / "user_data"
+
+
+DATA_DIR = _default_data_dir()
+DB_PATH = DATA_DIR / "strava_dashboard_v2.db"
+INCOMING_DIR = DATA_DIR / "incoming"
+# This private profile belongs only to version_2_app and is never backed up.
+BROWSER_DATA_DIR = DATA_DIR / "browser_data"
+CONFIG_PATH = DATA_DIR / "config.json"
+for directory in (DATA_DIR, INCOMING_DIR, BROWSER_DATA_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_CONFIG = {
     "timezone": "Asia/Kuala_Lumpur",
@@ -26,7 +43,24 @@ DEFAULT_CONFIG = {
     "maximum_moving_gap_seconds": 10,
     "altitude_smoothing_points": 15,
     "automatic_retry_limit": 2,
+    "backup_directory": "",
+    "ai_provider": "gemini",
+    "ai_model": "gemini-2.5-flash",
+    "ai_base_url": "",
+    "ai_additional_instructions": "",
+    "ai_include_activity_names": False,
+    "ai_include_exact_dates": True,
+    "ai_include_chart_samples": True,
+    "ai_comparison_activity_limit": 8,
+    "ai_max_output_tokens": 1800,
 }
+
+
+def default_backup_directory():
+    configured = str(load_config().get("backup_directory", "")).strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path.home() / "Documents" / "Strava Dashboard" / "Backups"
 
 
 def load_config():

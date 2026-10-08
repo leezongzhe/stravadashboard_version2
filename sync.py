@@ -8,9 +8,14 @@ def main():
     parser = argparse.ArgumentParser(description="Synchronize Strava activities")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--local-only", action="store_true")
-    parser.add_argument("--full-history", action="store_true")
+    initial = parser.add_mutually_exclusive_group()
+    initial.add_argument("--initial-records", type=int, metavar="N")
+    initial.add_argument("--download-all", action="store_true")
     args = parser.parse_args()
-    result = asyncio.run(synchronize(args.retry_failed, args.local_only, args.full_history))
+    initial_limit = "all" if args.download_all else args.initial_records
+    result = asyncio.run(
+        synchronize(args.retry_failed, args.local_only, initial_limit)
+    )
     print("\nSynchronization summary:")
     print(result)
 

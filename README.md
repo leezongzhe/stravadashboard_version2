@@ -1,170 +1,149 @@
-# Strava Dashboard — Version 2
+# Strava Dashboard — Windows App Edition
 
-Version 2 keeps the original project intact and provides a more reliable synchronization and analytics pipeline.
+This folder is a Windows-only, locally installed form of Version 2. It retains
+Version 2's activity analytics and its existing Chrome/Playwright synchronization
+mechanism. It does not use the paid or official Strava API.
 
-## Main improvements
+## What is different
 
-- First-run Strava login is built into synchronization.
-- The working Google Chrome login mechanism and saved profile from version 1 are reused.
-- Existing TCX files are imported deterministically without a folder watcher.
-- Downloads and imports are tracked in SQLite.
-- Repeatedly unavailable/manual activities stop retrying automatically.
-- Failed activities can be explicitly retried.
-- Imports are transactional and safe to repeat.
-- TCX checksums prevent unnecessary re-imports.
-- Historical, comparison, route, split, best-effort, HR-zone and quality views are included.
-- Training history includes both monthly and weekly distance and consistency charts.
-- Altitude is smoothed before elevation and grade calculations.
-- A Settings page controls personal HR zones and analysis thresholds.
-- Lowest/highest valid TCX heart rates are recorded dynamically and used by
-  default until the user selects manual resting or maximum HR values.
-- The first successful synchronization traverses every Strava training-history
-  page. Later synchronizations inspect only the newest page.
-- GPS-only activities remain available even when the TCX contains no heart rate.
-- Multi-lap TCX metadata is aggregated across every lap, preventing activity-list
-  distance/time values from showing only the first lap.
+- Double-click `StravaDashboard.exe` to synchronize and open the dashboard.
+- First launch lets the user download all activities or the latest chosen number.
+- Later launches inspect the newest two Strava training-history pages.
+- Training history includes monthly and weekly distance and consistency charts.
+- Pace, splits, best efforts, zone time, and training-duration summaries use
+  moving time; elapsed and stopped time remain visible for reference.
+- The Settings page shows exactly two current all-time HR records: the highest
+  valid downloaded HR and the lowest valid downloaded HR.
+- Python, Streamlit, and the application dependencies are bundled in the build.
+- The database and all private data remain outside the executable.
+- A local `.sdbbackup` format backs up the database, settings, and optional TCX files.
+- Browser cookies and `browser_data` are never included in a backup.
+- A read-only floating AI Coach can analyze the activity currently open through the user's
+  own Gemini, OpenAI, Anthropic, or OpenAI-compatible API connection.
+- Windows is the only supported platform for this edition.
 
-## First-time setup
+Google Chrome is still required. On first launch, complete the Strava login in
+the Chrome window. The session is retained in this edition's own private browser
+profile for subsequent synchronization.
 
-Open PowerShell in this folder and run:
+Before that first synchronization, choose either **Download all available
+activities** or **Download the latest N activities**. The app follows Strava's
+training-history pages until the requested number is found. If N is greater than
+the account's total, every available activity is selected. Once setup succeeds,
+later launches inspect the newest two pages; unfinished registered downloads
+remain in the retry queue.
 
-```powershell
-.\setup.ps1
-```
+## Run the packaged app
 
-If PowerShell blocks local scripts, run the commands manually:
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
-```
-
-## Normal execution
-
-```powershell
-.\run_dashboard.ps1
-```
-
-Version 2 uses the same Strava discovery, TCX download, and persistent-session
-approach as Version 1. It always stores its private browser profile in
-`browser_data/` and never reads Version 1's profile.
-
-For first login, Version 2 starts the installed Chrome executable normally and
-then attaches the synchronization controller through Chrome's debugging endpoint.
-It presses Strava's Google login control when present, lets you complete any
-account or two-factor prompt, and saves the resulting session for later runs.
-Close other Chrome windows using the Version 2 profile before synchronization.
-
-Google Chrome and Python 3.10 or newer are required.
-
-## Initial full-history synchronization
-
-The first synchronization after this feature is installed scans every page in
-the Strava training log, registers all discovered activity IDs, and downloads the
-pending TCX files. The console reports each page and the cumulative activity
-count. Only after pagination finishes successfully is
-`initial_history_scan_complete=true` saved in the database's `app_settings`
-table. If navigation fails or a page repeats, the completion flag is not saved
-and the full scan is attempted again on the next run.
-
-After the completion flag exists, normal runs inspect only page one. Historical
-activities that were already registered but whose download was interrupted stay
-in the database download queue, so they continue downloading without revisiting
-all Strava pages.
-
-To deliberately repeat the all-pages inspection:
-
-```powershell
-.\.venv\Scripts\python.exe sync.py --full-history
-```
-
-This is useful when testing pagination or rebuilding the discovery list.
-
-## Useful modes
-
-```powershell
-# Import copied/local TCX files without accessing Strava
-.\.venv\Scripts\python.exe launcher.py --local-only
-
-# Open the dashboard without synchronizing
-.\.venv\Scripts\python.exe launcher.py --dashboard-only
-
-# Retry activities previously marked unavailable or failed
-.\.venv\Scripts\python.exe launcher.py --retry-failed
-
-# Force another scan of every training-history page
-.\.venv\Scripts\python.exe launcher.py --full-history
-```
-
-## Activities without heart rate
-
-A TCX file with GPS/time/distance but no heart-rate samples is still imported as
-a normal activity. Training history, activity selection, route map, pace,
-distance, time, elevation, splits, best efforts, and data-quality reporting stay
-available. HR values display as `--`; HR-zone, HR-profile, aerobic-decoupling,
-and HR-efficiency visualizations display a clear no-data message or omit only the
-activity's unavailable HR series. Such activities do not contribute to automatic
-minimum/maximum HR records or zone-boundary calculations.
-
-## Personal configuration
-
-Copy the example configuration and then edit your private copy:
-
-```powershell
-Copy-Item config.example.json config.json
-```
-
-Use the dashboard's **Settings** tab to set the timezone, automatic or manual
-resting/maximum HR sources, five HR-zone limits, valid sensor range, movement
-threshold, recording-gap limit, altitude smoothing, and download retry limit.
-The private values are saved to `config.json`, which is excluded from Git.
-
-The timezone field is a searchable worldwide selector built dynamically from the
-installed IANA timezone database. Options use region/city names and show their
-current UTC offsets, including applicable daylight-saving rules.
-
-## Dynamic heart-rate records and zones
-
-Version 2 stores per-activity HR minima/maxima and an all-time record history in
-SQLite. After each TCX import it rebuilds the current extrema. A higher valid HR
-becomes the automatic maximum; a lower valid activity HR becomes the automatic
-resting input. Manual settings override either automatic value independently.
-
-“Highest-HR activities” includes imported activities that contain at least one
-heart-rate sample inside the valid sensor range configured in Settings. For each
-activity, the dashboard takes its single highest valid TCX sample, sorts the
-activities from highest to lowest, and shows the user-selected top N. The top-N
-control can range from one to the total number of imported activities containing
-valid HR data. The first use defaults to all available activities; after the user
-chooses N, that value is saved in private `config.json` and becomes the default
-for future sessions. Equal maxima are ordered by activity date. Both this list
-and the all-time record history include links that open and preselect the
-corresponding Activity analysis.
-
-Zones use the heart-rate-reserve calculation:
+After building, double-click:
 
 ```text
-zone boundary = resting HR + percentage × (maximum HR − resting HR)
+dist\StravaDashboard\StravaDashboard.exe
 ```
 
-The default upper percentages are 60%, 70%, 80%, 90%, and 100%, and all five can
-be customized. The lowest exercise HR is not necessarily a true physiological
-resting HR, so a measured morning, sleep, or clinical value is preferable when
-available.
+Keep the complete `dist\StravaDashboard` folder together. The main window uses
+the bundled `StravaDashboardServer.exe` helper to run the dashboard silently in
+the background; users should continue to start only `StravaDashboard.exe`.
 
-## Data and privacy
+The small launcher remains open while synchronization runs and displays progress.
+When the local dashboard is ready, it opens in the default browser. Keep the
+launcher minimized; closing it stops the local dashboard server.
 
-The repository excludes `browser_data`, `incoming`, all TCX and SQLite database files, virtual environments, and `config.json`. These contain authenticated sessions, precise routes, activity timestamps, heart-rate readings, or other personal values and must not be committed.
+To open without synchronizing, use PowerShell:
 
-## Windows application edition
+```powershell
+.\dist\StravaDashboard\StravaDashboard.exe --dashboard-only
+```
 
-The [`version_2_app`](version_2_app/) folder contains the Windows-only packaged
-edition. It keeps the Version 2 analytics and browser-based synchronization,
-adds local backup and recovery, and stores all writable personal data outside
-the installed application. See its
-[`README.md`](version_2_app/README.md) for build and usage instructions.
+## Private data locations
 
-Generated executables and ZIP packages are intentionally excluded from this
-source repository. Build them locally with
-`version_2_app/build_windows.ps1`.
+The packaged app stores writable data here:
+
+```text
+%LOCALAPPDATA%\StravaDashboardV2App\
+  strava_dashboard_v2.db
+  config.json
+  incoming\
+  browser_data\
+```
+
+The default backup folder is:
+
+```text
+%USERPROFILE%\Documents\Strava Dashboard\Backups\
+```
+
+It can be changed in **Settings → Local backup folder**.
+
+## Local backup and recovery
+
+Open the dashboard's **Backup** tab. **Create local backup** writes a timestamped
+`.sdbbackup` archive. Leave **Include original TCX files** enabled for a complete
+recovery set. You can also download a copy from the dashboard and store it on a
+USB drive, NAS, or any normal folder.
+
+For recovery, upload the `.sdbbackup` in the same tab and select **Restore this
+backup**. The app validates archive paths, SHA-256 checksums, and SQLite integrity,
+then restores everything to the managed data location above. A safety backup of
+the current database is created before replacement. The chosen download/upload
+location does not become a permanent data dependency.
+
+The authenticated browser profile is intentionally not portable. After restoring
+on another computer, sign in to Strava once on that computer.
+
+## Floating AI Coach
+
+Open **Settings → AI coach connection**, choose a provider and model, and enter
+your own API key. The key is stored by Windows Credential Manager and is not
+saved in the database, `config.json`, local backups, logs, or distributable
+folder. Provider/model and privacy preferences are saved normally, but a
+restored backup never contains the credential.
+
+The coach appears as a floating bubble at the bottom-right of the dashboard.
+Open **Activity analysis**, choose a record, then open the bubble. The coach is
+bound to that exact activity page rather than a separate AI report tab. Select
+**Prepare current page** to build a read-only snapshot using the same calculation
+functions as the visible dashboard: moving and elapsed performance, stopped
+time, complete HR-zone distribution, splits, best efforts, pace consistency,
+aerobic decoupling, second-half change, elevation, route characteristics, data
+quality, chart samples, earlier comparison activities, and 7/28/84-day trends.
+Training that happened after the selected activity is excluded from its context.
+
+Review the complete JSON preview and give consent before sending it. Exact GPS
+coordinates are never included. Activity names, exact timestamps, and chart samples
+can be disabled in Settings. The AI cannot read SQLite directly or change,
+delete, synchronize, restore, or otherwise control dashboard data.
+
+AI analysis is generated by an external provider and may be inaccurate. It is
+training guidance, not medical diagnosis. Each user is responsible for their
+provider account, costs, rate limits, and privacy terms.
+
+## Build on Windows
+
+Python is needed only by the developer who builds the package, not by the person
+who runs it. From PowerShell in this folder:
+
+```powershell
+.\build_windows.ps1
+```
+
+The script creates an isolated build environment and produces a PyInstaller
+onedir package in `dist\StravaDashboard`. Distribute that whole folder, not only
+the `.exe`, because the adjacent `_internal` folder contains the bundled runtime.
+
+For development without packaging:
+
+```powershell
+.\run_source.ps1
+```
+
+Source mode keeps test data under `user_data\`, which is ignored by Git. For
+automated testing, `STRAVA_DASHBOARD_DATA_DIR` can override the data location.
+
+## Privacy
+
+Never commit or share `user_data`, `browser_data`, `incoming`, databases,
+`config.json`, or `.sdbbackup` archives. They may contain routes, timestamps,
+heart-rate data, settings, and authenticated sessions. API keys are separate in
+Windows Credential Manager, but AI context leaves the computer only after the
+user reviews the preview and explicitly consents.

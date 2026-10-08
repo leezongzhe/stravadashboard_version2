@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from .config import DB_PATH
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @contextmanager
@@ -47,6 +47,7 @@ def initialize_database():
                 activity_type TEXT,
                 start_time TEXT,
                 elapsed_seconds REAL,
+                moving_seconds REAL,
                 distance_m REAL,
                 calories REAL,
                 source TEXT NOT NULL DEFAULT 'tcx',
@@ -101,6 +102,12 @@ def initialize_database():
                 ON activities(import_status);
             """
         )
+
+        activity_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(activities)")
+        }
+        if "moving_seconds" not in activity_columns:
+            connection.execute("ALTER TABLE activities ADD COLUMN moving_seconds REAL")
 
         # Preserve manual/unavailable records created by the first revision.
         legacy_table = connection.execute(
@@ -390,6 +397,30 @@ def heart_rate_record_history(limit=100):
             ORDER BY recorded_at DESC, id DESC LIMIT ?
             """,
             (int(limit),),
+        ).fetchall()
+
+
+def current_heart_rate_records():
+    """Return only the current all-time maximum and minimum HR records."""
+    with connect() as connection:
+        return connection.execute(
+            """
+            SELECT record_type, heart_rate, activity_id, observed_at, recorded_at
+            FROM heart_rate_record_history
+            WHERE id = (
+                SELECT id FROM heart_rate_record_history
+                WHERE record_type = 'maximum'
+                ORDER BY heart_rate DESC, recorded_at DESC, id DESC
+                LIMIT 1
+            )
+            OR id = (
+                SELECT id FROM heart_rate_record_history
+                WHERE record_type = 'minimum'
+                ORDER BY heart_rate ASC, recorded_at DESC, id DESC
+                LIMIT 1
+            )
+            ORDER BY CASE record_type WHEN 'maximum' THEN 0 ELSE 1 END
+            """
         ).fetchall()
 
 

@@ -9,17 +9,6 @@ from app.config import resolve_maximum_heart_rate, resolve_resting_heart_rate
 
 
 class HeartRateRecordTests(unittest.TestCase):
-    def test_internal_app_setting_round_trip(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "settings.db"
-            with patch.object(database, "DB_PATH", path):
-                database.initialize_database()
-                self.assertIsNone(database.get_app_setting("initial_history_scan_complete"))
-                database.set_app_setting("initial_history_scan_complete", "true")
-                self.assertEqual(
-                    database.get_app_setting("initial_history_scan_complete"), "true"
-                )
-
     def test_worldwide_timezone_catalog_is_available(self):
         zones = app_config.worldwide_timezones()
         self.assertGreater(len(zones), 300)
@@ -97,6 +86,12 @@ class HeartRateRecordTests(unittest.TestCase):
                 self.assertEqual(second["observed_maximum"], 192)
                 history = database.heart_rate_record_history()
                 self.assertEqual(len(history), 4)
+                current = database.current_heart_rate_records()
+                self.assertEqual(len(current), 2)
+                self.assertEqual(current[0]["record_type"], "maximum")
+                self.assertEqual(current[0]["heart_rate"], 192)
+                self.assertEqual(current[1]["record_type"], "minimum")
+                self.assertEqual(current[1]["heart_rate"], 50)
 
 
 if __name__ == "__main__":

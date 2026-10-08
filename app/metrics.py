@@ -26,7 +26,22 @@ def prepare_trackpoints(df, config):
     data["dt"] = data["time"].diff().dt.total_seconds().clip(lower=0)
     data["dd"] = data["distance"].diff()
     derived_speed = data["dd"] / data["dt"].replace(0, np.nan)
-    data["effective_speed"] = data["speed"].where(data["speed"] > 0, derived_speed)
+
+    # Prefer the device-recorded TCX speed. Strava exports from some devices
+    # contain one-second GPS samples while DistanceMeters changes only in
+    # coarse steps; deriving speed exclusively from that quantized distance
+    # incorrectly labels genuine running samples as stationary. When speed is
+    # absent or zero, distance-derived speed remains the fallback. Long gaps
+    # are independently rejected by maximum_moving_gap_seconds below.
+    has_distance_interval = (
+        data["distance"].notna()
+        & data["distance"].shift().notna()
+        & data["dt"].gt(0)
+    )
+    recorded_speed = data["speed"].where(data["speed"] > 0)
+    data["effective_speed"] = recorded_speed.combine_first(
+        derived_speed.where(has_distance_interval)
+    )
     data["speed_kmh"] = data["effective_speed"] * 3.6
     data["pace_min_km"] = np.where(
         data["effective_speed"] > 0,
@@ -47,17 +62,18 @@ def prepare_trackpoints(df, config):
         (data["effective_speed"] > config["moving_speed_threshold_mps"])
         & (data["dt"] <= config["maximum_moving_gap_seconds"])
     )
+    data["moving_dt"] = data["dt"].where(data["moving"], 0).fillna(0)
+    data["moving_elapsed"] = data["moving_dt"].cumsum()
     return data.reset_index(drop=True)
 
 
 def activity_summary(data):
     distance_m = data["distance"].max() if data["distance"].notna().any() else 0
     elapsed = data["dt"].fillna(0).sum()
-    moving = data.loc[data["moving"], "dt"].fillna(0).sum()
+    moving = data["moving_dt"].sum()
     altitude_change = data["altitude_change"].dropna()
     gain = altitude_change[altitude_change > 0].sum()
     loss = -altitude_change[altitude_change < 0].sum()
-    pace = elapsed / 60 / (distance_m / 1000) if distance_m > 0 else np.nan
     moving_pace = moving / 60 / (distance_m / 1000) if distance_m > 0 and moving > 0 else np.nan
     valid_pace = data["pace_min_km"].dropna()
     consistency = valid_pace.std() / valid_pace.mean() * 100 if len(valid_pace) > 1 else np.nan
@@ -66,9 +82,12 @@ def activity_summary(data):
         "elapsed_seconds": elapsed,
         "moving_seconds": moving,
         "stopped_seconds": max(0, elapsed - moving),
-        "pace": pace,
+        # `pace` is the dashboard's primary pace and intentionally excludes
+        # stationary intervals. Elapsed time remains available as a separate
+        # descriptive value.
+        "pace": moving_pace,
         "moving_pace": moving_pace,
-        "avg_hr": data["heart_rate"].mean(),
+        "avg_hr": data.loc[data["moving"], "heart_rate"].mean(),
         "max_hr": data["heart_rate"].max(),
         "avg_speed_kmh": data.loc[data["moving"], "speed_kmh"].mean(),
         "max_speed_kmh": data["speed_kmh"].max(),
@@ -79,11 +98,11 @@ def activity_summary(data):
 
 
 def exact_splits(data, interval_m=1000):
-    valid = data.dropna(subset=["time", "distance"]).sort_values("distance")
+    valid = data.dropna(subset=["distance", "moving_elapsed"]).sort_values("distance")
     valid = valid.drop_duplicates("distance")
     if len(valid) < 2 or valid["distance"].max() < interval_m:
         return pd.DataFrame()
-    elapsed = (valid["time"] - valid["time"].iloc[0]).dt.total_seconds().to_numpy()
+    elapsed = valid["moving_elapsed"].to_numpy()
     distances = valid["distance"].to_numpy()
     boundaries = np.arange(0, valid["distance"].max(), interval_m)
     if boundaries[-1] < distances[-1]:
@@ -107,11 +126,11 @@ def exact_splits(data, interval_m=1000):
 
 
 def best_efforts(data):
-    valid = data.dropna(subset=["time", "distance"]).sort_values("distance").drop_duplicates("distance")
+    valid = data.dropna(subset=["distance", "moving_elapsed"]).sort_values("distance").drop_duplicates("distance")
     if len(valid) < 2:
         return pd.DataFrame()
     distances = valid["distance"].to_numpy()
-    elapsed = (valid["time"] - valid["time"].iloc[0]).dt.total_seconds().to_numpy()
+    elapsed = valid["moving_elapsed"].to_numpy()
     rows = []
     for label, target in BEST_EFFORT_DISTANCES.items():
         if distances[-1] < target:
@@ -144,14 +163,16 @@ def heart_rate_zones(data, config):
     lower_fractions = [0.0] + upper_fractions[:-1]
     boundaries = list(zip(lower_fractions, upper_fractions))
     rows = []
-    total = data.loc[data["heart_rate"].notna(), "dt"].fillna(0).sum()
+    moving_hr = data["moving"] & data["heart_rate"].notna()
+    total = data.loc[moving_hr, "moving_dt"].sum()
     for number, (low, high) in enumerate(boundaries, 1):
         lower = resting + reserve * low
         upper = resting + reserve * high
         inclusive = "both" if number == len(boundaries) else "left"
         seconds = data.loc[
-            data["heart_rate"].between(lower, upper, inclusive=inclusive), "dt"
-        ].fillna(0).sum()
+            moving_hr & data["heart_rate"].between(lower, upper, inclusive=inclusive),
+            "moving_dt",
+        ].sum()
         rows.append({
             "Zone": f"Z{number}",
             "Lower_bpm": round(lower),
@@ -173,11 +194,11 @@ def aerobic_decoupling(data):
 
 
 def negative_split(data):
-    valid = data.dropna(subset=["time", "distance"]).sort_values("distance").drop_duplicates("distance")
+    valid = data.dropna(subset=["distance", "moving_elapsed"]).sort_values("distance").drop_duplicates("distance")
     if len(valid) < 2 or valid["distance"].max() <= 0:
         return np.nan
     distances = valid["distance"].to_numpy()
-    elapsed = (valid["time"] - valid["time"].iloc[0]).dt.total_seconds().to_numpy()
+    elapsed = valid["moving_elapsed"].to_numpy()
     midpoint = distances[-1] / 2
     midpoint_time = np.interp(midpoint, distances, elapsed)
     first_pace = midpoint_time / midpoint

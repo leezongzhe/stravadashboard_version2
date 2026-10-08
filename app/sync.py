@@ -21,7 +21,7 @@ from .importer import import_all, import_tcx
 
 
 TRAINING_URL = "https://www.strava.com/athlete/training"
-INITIAL_HISTORY_SCAN_SETTING = "initial_history_scan_complete"
+INITIAL_DOWNLOAD_SETUP_SETTING = "initial_download_setup_complete"
 
 
 class ChromeSession:
@@ -144,7 +144,7 @@ async def ensure_login(page):
     if "accounts.google.com" in page.url and "/signin/rejected" in page.url:
         raise RuntimeError(
             "Google rejected this browser session. Close every Chrome window, "
-            "remove version_2/browser_data, and run synchronization again."
+            "remove this app's browser_data folder, and run synchronization again."
         )
 
     print("[*] If prompted, finish Google/Strava login in the open Chrome window.")
@@ -165,11 +165,13 @@ async def ensure_login(page):
 
 
 def _extract_activity_ids(hrefs):
-    ids = set()
+    ids = []
+    seen = set()
     for href in hrefs:
         match = re.search(r"/activities/(\d+)", href or "")
-        if match:
-            ids.add(match.group(1))
+        if match and match.group(1) not in seen:
+            seen.add(match.group(1))
+            ids.append(match.group(1))
     return ids
 
 
@@ -211,20 +213,28 @@ async def _find_next_control(page):
 
 async def discover_activity_ids(
     page,
-    full_history=False,
+    history_limit=None,
+    routine_pages=2,
     scroll_rounds=12,
     settle_seconds=3,
     max_pages=500,
 ):
-    """Discover page one, or traverse every training page for an initial scan."""
+    """Discover initial history or a bounded number of newest routine pages."""
+    if history_limit != "all" and history_limit is not None:
+        history_limit = int(history_limit)
+        if history_limit < 1:
+            raise ValueError("Initial download count must be at least 1")
+
     await page.goto(TRAINING_URL, wait_until="domcontentloaded")
     await asyncio.sleep(settle_seconds)
-    discovered = set()
+    discovered = []
+    discovered_set = set()
     seen_pages = set()
     expected_total = None
+    routine_pages = max(1, int(routine_pages))
+    paginate = history_limit is not None or routine_pages > 1
 
     for page_number in range(1, max_pages + 1):
-        # Strava can lazy-render the bottom of the current 20-row page.
         previous_height = 0
         stable_rounds = 0
         for _ in range(scroll_rounds):
@@ -245,10 +255,13 @@ async def discover_activity_ids(
         signature = tuple(sorted(page_ids))
         if signature in seen_pages:
             raise RuntimeError(
-                f"Training pagination repeated page {page_number}; the full scan was not marked complete."
+                f"Training pagination repeated page {page_number}; initial setup remains incomplete."
             )
         seen_pages.add(signature)
-        discovered.update(page_ids)
+        for activity_id in page_ids:
+            if activity_id not in discovered_set:
+                discovered_set.add(activity_id)
+                discovered.append(activity_id)
 
         body_text = await page.locator("body").inner_text()
         expected_total = _pagination_total(body_text) or expected_total
@@ -256,7 +269,16 @@ async def discover_activity_ids(
             f"[OK] Training page {page_number}: {len(page_ids)} activities "
             f"({len(discovered)} unique discovered)."
         )
-        if not full_history:
+        if history_limit is None and page_number >= routine_pages:
+            break
+
+        requested_count = None if history_limit == "all" else history_limit
+        required_count = (
+            min(requested_count, expected_total)
+            if requested_count is not None and expected_total is not None
+            else requested_count
+        )
+        if required_count is not None and len(discovered) >= required_count:
             break
         if expected_total is not None and len(discovered) >= expected_total:
             break
@@ -266,12 +288,12 @@ async def discover_activity_ids(
             if expected_total is not None and len(discovered) < expected_total:
                 raise RuntimeError(
                     f"Strava reports {expected_total} activities, but pagination stopped after "
-                    f"discovering {len(discovered)}. The full scan will retry next time."
+                    f"discovering {len(discovered)}. Initial setup remains incomplete."
                 )
             if page_number == 1 and expected_total is None and len(page_ids) >= 20:
                 raise RuntimeError(
                     "The first page is full, but the Next control and activity total could not be found. "
-                    "The full scan was not marked complete."
+                    "Initial setup remains incomplete."
                 )
             break
 
@@ -286,18 +308,27 @@ async def discover_activity_ids(
         else:
             raise RuntimeError(
                 f"Strava did not advance beyond training page {page_number}. "
-                "The full scan will retry next time."
+                "Initial setup remains incomplete."
             )
         await asyncio.sleep(0.75)
     else:
         raise RuntimeError(f"Training history exceeded the safety limit of {max_pages} pages.")
 
-    if full_history and expected_total is not None and len(discovered) < expected_total:
+    if history_limit != "all" and history_limit is not None:
+        discovered = discovered[:history_limit]
+    expected_requested = (
+        expected_total
+        if history_limit == "all"
+        else min(history_limit, expected_total)
+        if history_limit is not None and expected_total is not None
+        else history_limit
+    )
+    if paginate and expected_requested is not None and len(discovered) < expected_requested:
         raise RuntimeError(
-            f"Full history scan found {len(discovered)} of {expected_total} activities."
+            f"Initial history scan found {len(discovered)} of {expected_requested} requested activities."
         )
-    print(f"[OK] Discovered {len(discovered)} activities across {len(seen_pages)} page(s).")
-    return discovered
+    print(f"[OK] Selected {len(discovered)} activities across {len(seen_pages)} page(s).")
+    return set(discovered)
 
 
 async def download_tcx(page, activity_id):
@@ -318,7 +349,7 @@ async def download_tcx(page, activity_id):
         await download_page.close()
 
 
-async def synchronize(retry_failed=False, skip_browser=False, force_full_history=False):
+async def synchronize(retry_failed=False, skip_browser=False, initial_download_limit=None):
     initialize_database()
     config = load_config()
     if retry_failed:
@@ -336,27 +367,35 @@ async def synchronize(retry_failed=False, skip_browser=False, force_full_history
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await ensure_login(page)
-            initial_scan_complete = (
-                get_app_setting(INITIAL_HISTORY_SCAN_SETTING) == "true"
+            initial_setup_complete = (
+                get_app_setting(INITIAL_DOWNLOAD_SETUP_SETTING) == "true"
             )
-            full_history = force_full_history or not initial_scan_complete
-            if full_history:
-                reason = "requested" if force_full_history else "first successful synchronization"
-                print(f"[*] Full training-history scan enabled ({reason}).")
+            if not initial_setup_complete and initial_download_limit is None:
+                raise RuntimeError(
+                    "Choose 'Download all' or enter the latest number of activities for first-time setup."
+                )
+            history_limit = initial_download_limit if not initial_setup_complete else None
+            if history_limit == "all":
+                print("[*] First-time setup will download all available activities.")
+            elif history_limit is not None:
+                print(f"[*] First-time setup will download the latest {history_limit} activities.")
             else:
-                print("[*] Initial history scan is complete; inspecting the newest page only.")
-            discovered = await discover_activity_ids(page, full_history=full_history)
+                print("[*] Initial setup is complete; inspecting the newest two pages.")
+
+            discovered = await discover_activity_ids(page, history_limit=history_limit)
             for activity_id in discovered:
                 register_discovered(activity_id)
-            if full_history:
-                set_app_setting(INITIAL_HISTORY_SCAN_SETTING, "true")
-                print("[OK] Full training-history scan recorded as complete.")
+            if not initial_setup_complete:
+                set_app_setting(INITIAL_DOWNLOAD_SETUP_SETTING, "true")
+                set_app_setting("initial_download_selection", history_limit)
+                print("[OK] First-time download selection recorded.")
 
             handled = imported_activity_ids()
             pending = sorted(
                 (discovered - handled)
                 | retryable_activity_ids(int(config["automatic_retry_limit"])),
                 key=int,
+                reverse=True,
             )
             downloaded = 0
             failed = 0
@@ -383,7 +422,7 @@ async def synchronize(retry_failed=False, skip_browser=False, force_full_history
                 "discovered": len(discovered),
                 "downloaded": downloaded,
                 "failed": failed,
-                "full_history_scan": full_history,
+                "initial_setup": not initial_setup_complete,
             }
         finally:
             await context.close()

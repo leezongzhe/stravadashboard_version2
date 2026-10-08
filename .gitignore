@@ -7,6 +7,7 @@ venv/
 .build_venv/
 build/
 dist/
+dist_next/
 user_data/
 
 # Personal Strava data and generated databases
@@ -29,3 +30,5 @@ incoming/
 
 # Personal heart-rate and timezone configuration
 config.json
+
+.test_tmp/

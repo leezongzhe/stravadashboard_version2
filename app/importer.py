@@ -2,6 +2,8 @@ import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pandas as pd
+
 from .config import INCOMING_DIR, load_config
 from .database import (
     connect,
@@ -10,13 +12,14 @@ from .database import (
     refresh_heart_rate_records,
     utc_now,
 )
+from .metrics import activity_summary, prepare_trackpoints
 
 
 TCX_NS = {
     "tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
     "ext": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
 }
-PARSER_VERSION = 3
+PARSER_VERSION = 5
 
 
 def _text(element, path, namespace=TCX_NS):
@@ -71,9 +74,6 @@ def parse_tcx(path):
         if (value := _number(_text(lap, "tcx:Calories"))) is not None
     ]
     elapsed = sum(lap_elapsed) if lap_elapsed else None
-    # DistanceMeters belongs to each individual Lap. Summing every populated
-    # lap produces the activity total; selecting only the first lap caused the
-    # activity menu to show values such as 1.03 km for a 10.19 km run.
     distance = (
         sum(lap_distances)
         if laps and len(lap_distances) == len(laps)
@@ -114,9 +114,20 @@ def parse_tcx(path):
         "activity_type": sport,
         "start_time": start_time,
         "elapsed_seconds": elapsed,
+        "moving_seconds": None,
         "distance_m": distance,
         "calories": calories,
     }
+
+    point_frame = pd.DataFrame(
+        points,
+        columns=[
+            "activity_id", "time", "latitude", "longitude", "altitude",
+            "distance", "heart_rate", "speed",
+        ],
+    )
+    prepared = prepare_trackpoints(point_frame, load_config())
+    metadata["moving_seconds"] = activity_summary(prepared)["moving_seconds"]
     return metadata, points
 
 
@@ -162,14 +173,15 @@ def import_tcx(path, force=False):
                 """
                 INSERT INTO activities(
                     activity_id, activity_type, start_time, elapsed_seconds,
-                    distance_m, calories, source, import_status, retry_count,
+                    moving_seconds, distance_m, calories, source, import_status, retry_count,
                     last_error, source_file, source_checksum, parser_version,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'tcx', 'imported', 0, NULL, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'tcx', 'imported', 0, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(activity_id) DO UPDATE SET
                     activity_type=excluded.activity_type,
                     start_time=excluded.start_time,
                     elapsed_seconds=excluded.elapsed_seconds,
+                    moving_seconds=excluded.moving_seconds,
                     distance_m=excluded.distance_m,
                     calories=excluded.calories,
                     source='tcx', import_status='imported', retry_count=0,
@@ -180,7 +192,7 @@ def import_tcx(path, force=False):
                 (
                     metadata["activity_id"], metadata["activity_type"],
                     metadata["start_time"], metadata["elapsed_seconds"],
-                    metadata["distance_m"], metadata["calories"], path.name,
+                    metadata["moving_seconds"], metadata["distance_m"], metadata["calories"], path.name,
                     checksum, PARSER_VERSION, now, now,
                 ),
             )

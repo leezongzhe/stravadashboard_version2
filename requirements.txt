@@ -4,4 +4,3 @@ playwright
 plotly
 pydeck
 streamlit
-
