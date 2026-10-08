@@ -1,6 +1,0 @@
-numpy
-pandas
-playwright
-plotly
-pydeck
-streamlit
