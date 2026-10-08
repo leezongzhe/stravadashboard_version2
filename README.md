@@ -156,3 +156,15 @@ available.
 ## Data and privacy
 
 The repository excludes `browser_data`, `incoming`, all TCX and SQLite database files, virtual environments, and `config.json`. These contain authenticated sessions, precise routes, activity timestamps, heart-rate readings, or other personal values and must not be committed.
+
+## Windows application edition
+
+The [`version_2_app`](version_2_app/) folder contains the Windows-only packaged
+edition. It keeps the Version 2 analytics and browser-based synchronization,
+adds local backup and recovery, and stores all writable personal data outside
+the installed application. See its
+[`README.md`](version_2_app/README.md) for build and usage instructions.
+
+Generated executables and ZIP packages are intentionally excluded from this
+source repository. Build them locally with
+`version_2_app/build_windows.ps1`.
