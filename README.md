@@ -35,6 +35,11 @@ remain in the retry queue.
 
 ## Run the packaged app
 
+Download the latest prebuilt Windows package from
+[GitHub Releases](https://github.com/leezongzhe/stravadashboard_version2/releases/latest).
+Extract the complete ZIP before starting the application; do not run the executable
+from inside the ZIP.
+
 After building, double-click:
 
 ```text
